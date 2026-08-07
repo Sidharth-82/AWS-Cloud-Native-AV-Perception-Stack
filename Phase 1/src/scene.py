@@ -161,8 +161,15 @@ class Scene:
         
         ## Traffic Batch Spawn
         random.seed(self.spawn_rng_seed)
-        exclude = CONFIGS["CARLA_config.json"]["traffic_manager"]["exclude_base_types"]
-        vehicle_bps = [bp for bp in bp_lib.filter("vehicle.*") if bp.get_attribute("base_type").as_str() not in exclude]
+        ## Only spawn vehicles whose base_type the dataset can label. The exclude list let
+        ## through blueprints with an empty/other base_type (buses, cars CARLA never tagged)
+        ## -> unmappable "" classes. Whitelisting the class_map's vehicle base_types drops
+        ## bicycles AND those, so every spawned vehicle maps cleanly and
+        ## actor.attributes["base_type"] is always valid downstream (get_actors unchanged).
+        class_map = CONFIGS["CARLA_config.json"]["class_map"]
+        allowed_base_types = set(class_map["presets"][class_map["active_preset"]]["vehicle_by_base_type"])
+        vehicle_bps = [bp for bp in bp_lib.filter("vehicle.*")
+                    if bp.get_attribute("base_type").as_str() in allowed_base_types]
         
         points = [p for i, p in enumerate(spawns) if i != self.spawn_point_index]
         random.shuffle(points)
