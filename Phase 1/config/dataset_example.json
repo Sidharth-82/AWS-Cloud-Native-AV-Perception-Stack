@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.1",
+
+  "_note_scope": "ONE per-frame record - this is the unit the dataset is built from. Contains ONLY what varies frame to frame. Static rig/calibration lives in ego_config.json; run config lives in scene_description.json; CARLA settings, conventions, encodings and the class map live in CARLA_config.json.",
+
+  "_loader_contract": "Underscore-prefixed keys are documentation. The loader MUST strip them RECURSIVELY before use - notes appear inside iterable containers (see sensor_files) and an unstripped loader will treat a prose sentence as a file path.",
+
+  "scene_id": 1,
+  "carla_frame": 12345,
+  "frame_id": "001_012345",
+  "_note_frame_id": "Composite key, padded per CARLA_config.naming_convention: {scene_id:03d}_{carla_frame:06d}. carla_frame is the integer from world.tick() - the authoritative cross-sensor sync key in synchronous mode, reproducible given the same seeds. (scene_id, carla_frame) is the real primary key; frame_id is the derived string. Zero-padding makes lexicographic sort == numeric sort.",
+
+  "timestamp_sim_s": 123.45,
+  "_note_timestamp": "CARLA simulation time in seconds since episode start. NOT wall clock - wall clock is not reproducible.",
+
+  "sensor_files": {
+    "cam_front": "scene_001/cam_front/001_012345.png",
+    "cam_front_instance_seg": "scene_001/cam_front_instance_seg/001_012345.png",
+    "cam_front_depth": "scene_001/cam_front_depth/001_012345.png",
+    "lidar_top": "scene_001/lidar_top/001_012345.npy",
+    "_note": "Paths relative to the scene's s3_prefix. Explicit, never inferred. NOTE: the depth and instance_seg PNGs are ENCODED buffers, not literal images - see sensor_encoding in CARLA_config.json for the decode formulas. Reading them naively yields garbage."
+  },
+
+  "ego_pose": {
+    "_note": "Ego pose in the CARLA world frame. Sensor world pose = this composed with T_sensor_to_ego from ego_config.json.",
+    "position": { "x": 5.0, "y": 5.0, "z": 5.0 },
+    "rotation": { "roll": 0.0, "pitch": 0.0, "yaw": 90.0 },
+    "velocity": {
+      "linear": { "x": 27.7, "y": 0.0, "z": 0.0 },
+      "angular": { "x": 0.0, "y": 0.0, "z": 0.0 }
+    },
+    "_note_units": "position in meters, rotation in DEGREES (roll/pitch/yaw), linear velocity in m/s, angular velocity in deg/s."
+  },
+
+  "actors": [
+    {
+      "id": 123445,
+      "global_actor_id": "001_123445",
+      "_note_id": "'id' is the raw CARLA actor.id and is ONLY unique within an episode - actor 123445 in scene 1 and scene 2 are different vehicles. 'global_actor_id' ({scene_id:03d}_{actor_id}) is the dataset-wide unique key. Join on global_actor_id everywhere; this becomes load-bearing the moment tracking exists (Phase 0 supporting task).",
+
+      "class": "car",
+      "source": "carla_actor",
+      "blueprint_id": "vehicle.audi.tt",
+      "base_type": "car",
+      "_note_class": "'class' here is the RAW base_type straight from the blueprint - it is NOT the final dataset class. The KITTI writer applies CARLA_config.class_map to produce the training label. Recording blueprint_id + base_type means class re-maps and collapses are free offline; you never re-run the sim to change your mind about the class list.",
+
+      "velocity": {
+        "linear": { "x": 25.0, "y": 0.0, "z": 0.0 },
+        "angular": { "x": 0.0, "y": 0.0, "z": 0.0 }
+      },
+      "_note_velocity": "Recorded at capture even though the detection hero does not need it. Capture is one-shot and GPU-expensive; this field is nearly free now and requires a full re-run to add later. Needed for tracking and lead-vehicle relative speed.",
+
+      "bounding_box_world": {
+        "_note": "Resolved to WORLD frame at capture time: actor.bounding_box (actor-local) composed with actor.get_transform(). Storing world-frame directly means the offline pipeline never redoes this composition.",
+        "center": { "x": 5.0, "y": 5.0, "z": 5.0 },
+        "half_extent": { "x": 2.4, "y": 1.0, "z": 0.75 },
+        "rotation": { "roll": 0.0, "pitch": 0.0, "yaw": 90.0 }
+      }
+    },
+    {
+      "id": 123446,
+      "global_actor_id": "001_123446",
+      "class": "speed_sign",
+      "source": "environment_object + map_landmark",
+      "blueprint_id": null,
+      "base_type": null,
+      "listed_speed_kph": 90,
+      "_note_source": "Signs are NOT CARLA actors. The visible mesh box comes from world.get_environment_objects(CityObjectLabel.TrafficSigns); the posted speed comes from map.get_all_landmarks_of_type('274'). Associate by proximity. Two consequences: (1) blueprint_id/base_type are null, (2) signs have no instance-seg ID, so their visibility check uses the DEPTH camera, not instance segmentation.",
+      "_note_class": "Raw record keeps class='speed_sign' + listed_speed_kph as an attribute. The KITTI writer flattens these into a per-value class (speed_sign_90) via CARLA_config.class_map, because KITTI allows exactly one class string per label line.",
+
+      "velocity": null,
+      "_note_velocity": "null - signs are static.",
+
+      "bounding_box_world": {
+        "center": { "x": 5.0, "y": 5.0, "z": 5.0 },
+        "half_extent": { "x": 0.1, "y": 0.4, "z": 0.4 },
+        "rotation": { "roll": 0.0, "pitch": 0.0, "yaw": 90.0 }
+      }
+    }
+  ],
+
+  "_note_actors": "Capture-time records are UNFILTERED - every actor CARLA reports, including ones occluded or out of frustum. Visibility filtering happens offline (step 8.iii/8.iv). Do not filter on the GPU instance: keeping raw means the filter is re-tunable for free.",
+
+  "_note_no_visibility_field": "Deliberately absent. 'visible' is a DERIVED property computed offline against the instance-seg (vehicles) or depth (signs) buffers. Baking it into raw capture would freeze one filter threshold into data that costs GPU hours to regenerate."
+}

@@ -1,0 +1,83 @@
+{
+  "schema_version": "1.0",
+
+  "_note_scope": "Run-level provenance and generation metadata. This file answers WHEN / HOW / BY WHAT a capture was produced - as opposed to the config files, which declare WHAT to produce. Nothing here is an input to the sim; it is all stamped at or after generation time. Feeds directly into the data card (Phase 1 step 10.iv).",
+
+  "_file_map": {
+    "CARLA_config.json": "HOW the sim runs - server, world settings, conventions, presets",
+    "ego_config.json": "WHAT the ego is - blueprint + sensor rig (static across all scenes)",
+    "scene_description.json": "WHAT to capture - the 12-scene matrix + split policy",
+    "records.json": "the per-frame record schema",
+    "metadata.json": "THIS FILE - run provenance, results, cost"
+  },
+
+  "dataset_name": "carla_highway_perception_v1",
+  "storage_root": "s3://perception-project-bucket/",
+
+  "_note_runs": "A run = one execution of the data-gen pipeline over a set of scenes. Append a new entry per run. The top-up round (scene_description.json -> topup_scenes, after the histogram in step 9.v) becomes run 2.",
+
+  "runs": [
+    {
+      "run_id": 1,
+      "run_name": "initial_matrix",
+      "status": "planned",
+      "_status_values": "planned | in_progress | complete | aborted",
+
+      "scene_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+
+      "started_utc": null,
+      "completed_utc": null,
+
+      "provenance": {
+        "git_commit": "FILL_AT_GENERATION_TIME",
+        "config_hashes": {
+          "_note": "SHA256 of each config file as it existed at generation time. This is what lets you prove which exact config produced which data - if a config changes later, the hash mismatch tells you the dataset is stale. Cheap to compute, and a strong reproducibility signal.",
+          "CARLA_config.json": "FILL_AT_GENERATION_TIME",
+          "ego_config.json": "FILL_AT_GENERATION_TIME",
+          "scene_description.json": "FILL_AT_GENERATION_TIME"
+        },
+        "carla_version_observed": "FILL_AT_GENERATION_TIME",
+        "_note_carla_version": "The version that ACTUALLY ran. CARLA_config.json pins the intended version; this records what the server reported. A mismatch is a bug worth catching.",
+        "carla_python_wheel": "FILL_AT_GENERATION_TIME",
+        "python_version": "FILL_AT_GENERATION_TIME",
+        "docker_image": "carlasim/carla:0.9.15"
+      },
+
+      "compute": {
+        "instance_type": "g4dn.xlarge",
+        "purchase_option": "spot",
+        "region": "FILL_AT_GENERATION_TIME",
+        "ami_id": "FILL_AT_GENERATION_TIME",
+        "gpu_hours": null,
+        "est_cost_usd": null,
+        "_note_cost": "Track this per run. 'Generated a 7k-frame labeled AV dataset for $X of spot GPU' is a concrete number worth quoting (Project Outline section 7)."
+      },
+
+      "results": {
+        "scenes_completed": null,
+        "frames_captured": null,
+        "bytes_written": null,
+        "spot_interruptions": 0,
+        "_note_interruptions": "Spot instances can be reclaimed mid-run. Captures stream to S3 per chunk (step 7.iii), so an interruption should cost at most the current chunk - record it here if it happens so gaps in a scene are explainable later."
+      },
+
+      "class_histogram": {
+        "_status": "FILL AFTER OFFLINE PROCESSING (step 9.v). This is the number that decides (a) whether a top-up run is needed and (b) whether class_map.active_preset stays 'fine' or drops to 'coarse'.",
+        "_note_preset": "Counts below are for class_map preset 'fine' (7 classes). Per the Phase 1 doc each class wants 500-1500 instances. Cars will be abundant; motorcycle and the three sign classes are the at-risk ones.",
+        "_note_per_split": "Record per split, not just totals - a class that is healthy overall but absent from test tells you nothing on test.",
+        "fine": {
+          "car": null,
+          "truck": null,
+          "van": null,
+          "motorcycle": null,
+          "speed_sign_30": null,
+          "speed_sign_60": null,
+          "speed_sign_90": null
+        },
+        "_note_decision": "If motorcycle is starved -> flip class_map.active_preset to 'coarse' (free, no re-capture). If sign classes are starved -> that needs actual top-up scenes on sign-dense routes, since no re-mapping conjures sign instances that were never captured."
+      },
+
+      "notes": ""
+    }
+  ]
+}

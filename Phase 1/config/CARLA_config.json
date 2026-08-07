@@ -1,0 +1,180 @@
+{
+  "schema_version": "1.0",
+  "carla_version": "0.9.15",
+
+  "_note_scope": "CARLA-specific configuration ONLY. Server settings, world conventions, and named presets that scenes reference by name. Nothing here varies per scene. Run provenance (git commit, timestamps, cost, results) lives in metadata.json.",
+
+  "_note_carla_version": "This is the PIN - the version we intend to run. The version that actually ran is recorded in metadata.json under provenance.carla_version_observed.",
+
+  "_loader_contract": "ANY key beginning with an underscore is documentation, not data. The config loader MUST strip underscore-prefixed keys RECURSIVELY before use. This is a hard contract - notes live inside iterable containers (e.g. sensor_files), so an unstripped loader will try to open a prose sentence as a file path.",
+
+  "naming_convention": {
+    "scene_dir": "scene_{scene_id:03d}",
+    "frame_id": "{scene_id:03d}_{carla_frame:06d}",
+    "global_actor_id": "{scene_id:03d}_{actor_id}",
+    "sensor_file": "{scene_dir}/{sensor_name}/{frame_id}.{ext}",
+    "_note": "Zero-padded so lexicographic sort == numeric sort. Padding widths are MINIMUMS - a value that overflows still formats correctly, it just breaks sort order. carla_frame at 6 digits is safe here: 12 scenes x 300s x 20Hz = ~72k ticks, far under 999999. Re-check if scene count or duration grows a lot."
+  },
+
+  "server": {
+    "host": "127.0.0.1",
+    "port": 2000,
+    "timeout_s": 60.0,
+    "render_offscreen": true,
+    "_note": "Client connects to the CARLA container on the EC2 instance. Ports 2000-2002 stay local to the box (see Phase 1 step 2.v)."
+  },
+
+  "world_settings": {
+    "synchronous_mode": true,
+    "fixed_delta_seconds": 0.05,
+    "sim_hz": 20,
+    "no_rendering_mode": false,
+    "_note": "Synchronous mode + fixed timestep is non-negotiable: async mode gives misaligned sensor frames and non-reproducible runs (Phase 1 step 4)."
+  },
+
+  "capture": {
+    "capture_every_n_ticks": 10,
+    "capture_hz": 2,
+    "_note": "2 Hz from a 20 Hz sim. At highway speed, consecutive 20 Hz frames are near-duplicates: they inflate frame count without adding information and leak across splits."
+  },
+
+  "traffic_manager": {
+    "port": 8000,
+    "synchronous_mode": true,
+    "exclude_base_types": ["bicycle"],
+    "_note": "Per-scene TM seed lives in scene_description.json (seeds.traffic_manager), since it varies per run.",
+    "_note_exclude": "Bicycles are filtered from spawn. They do not belong on a highway, and as a class they would be permanently starved - a class that can never hit its instance target is worse than no class at all."
+  },
+
+  "sensor_encoding": {
+    "_note": "CARLA's depth and instance-seg cameras do NOT emit literal images - they pack data into RGB channels. Reading them as ordinary images gives garbage. These decodes are load-bearing for the offline visibility filter (step 8.iii/8.iv).",
+
+    "_CRITICAL_lossless": "Depth and instance-seg MUST be saved as LOSSLESS PNG. Never JPEG. JPEG's lossy compression corrupts the packed channel values and silently destroys both decodes. Do not apply any carla.ColorConverter to these two sensors either - the Depth/LogarithmicDepth converters are VISUALIZATION helpers that discard precision. Save the RAW buffer.",
+
+    "cam_front_depth": {
+      "storage": "lossless PNG, raw CARLA buffer, no ColorConverter",
+      "decode": "normalized = (R + G*256 + B*256*256) / (256**3 - 1); depth_meters = 1000 * normalized",
+      "max_range_m": 1000,
+      "_note": "Standard CARLA depth encoding: 24-bit depth packed across RGB, normalized to a 1000m far plane. Decode to float32 metres offline."
+    },
+
+    "cam_front_instance_seg": {
+      "storage": "lossless PNG, raw CARLA buffer",
+      "decode_semantic_tag": "R channel",
+      "decode_instance_id": "actor_id = (G * 256) + B",
+      "_VERIFY": "VERIFY THE BYTE ORDER AND THE ID MAPPING EMPIRICALLY ON FIRST REAL DATA. Two things to confirm: (1) whether the instance id is (G*256)+B or (B*256)+G, and (2) whether that id equals carla actor.id directly. Do not trust this decode until checked.",
+      "how_to_verify": "Spawn ONE vehicle at a known position with a known actor.id, capture one frame, read the pixels inside its projected box, and confirm the decoded id matches actor.id. This is a 10-minute check that prevents a silently-empty visibility filter.",
+      "_note_16bit": "Instance ids are 16-bit (max 65535). Fine for 300s scenes; worth re-checking if episodes get much longer."
+    },
+
+    "cam_front": {
+      "storage": "lossless PNG (ColorConverter.Raw)",
+      "_note": "PNG for training-data fidelity. JPEG would cut storage ~10x but introduces compression artifacts into detector inputs. Revisit only if storage becomes a real cost - at ~30GB total for this matrix, it is not."
+    },
+
+    "lidar_top": {
+      "storage": ".npy float32, shape (N, 4) = x, y, z, intensity",
+      "_note": "Points are already in the LiDAR sensor frame. Compose with T_sensor_to_ego + ego_pose to reach world."
+    }
+  },
+
+  "coordinate_conventions": {
+    "world_frame": "CARLA world: left-handed, X-forward, Y-right, Z-up. Units: meters.",
+    "rotation": "roll/pitch/yaw in DEGREES, applied in CARLA's native order.",
+    "bounding_box_extent": "HALF-dimensions (CARLA convention). Full size = 2 * half_extent.",
+    "extrinsic_direction": "Sensor transforms in ego_config.json are T_sensor_to_ego (sensor pose expressed in the ego frame). Sensor world pose = ego_pose composed with T_sensor_to_ego.",
+    "timestamp": "CARLA simulation time in seconds since episode start (NOT wall clock).",
+    "_note": "Every ambiguity here is a silent-wrong-label bug if left implicit. The KITTI writer (Phase 1 step 9) must convert FROM these conventions TO KITTI's (camera x-right/y-down/z-forward, rotation_y about the vertical axis)."
+  },
+
+  "weather_presets": {
+    "clear_day": {
+      "cloudiness": 10.0, "precipitation": 0.0, "precipitation_deposits": 0.0,
+      "wind_intensity": 10.0, "sun_azimuth_angle": 90.0, "sun_altitude_angle": 60.0,
+      "fog_density": 2.0, "fog_distance": 0.0, "fog_falloff": 0.2, "wetness": 0.0
+    },
+    "clear_night": {
+      "cloudiness": 10.0, "precipitation": 0.0, "precipitation_deposits": 0.0,
+      "wind_intensity": 10.0, "sun_azimuth_angle": 90.0, "sun_altitude_angle": -90.0,
+      "fog_density": 2.0, "fog_distance": 0.0, "fog_falloff": 0.2, "wetness": 0.0
+    },
+    "clear_sunset": {
+      "_status": "AVAILABLE, unused in v1. Low-sun glare is a genuinely hard perception case - cheap diversity for the add-on round.",
+      "cloudiness": 10.0, "precipitation": 0.0, "precipitation_deposits": 0.0,
+      "wind_intensity": 10.0, "sun_azimuth_angle": 250.0, "sun_altitude_angle": 5.0,
+      "fog_density": 2.0, "fog_distance": 0.0, "fog_falloff": 0.2, "wetness": 0.0
+    },
+    "light_rain_day": {
+      "_status": "ADD-ON round only (per Phase 1 doc). Not in the must-complete matrix.",
+      "cloudiness": 70.0, "precipitation": 40.0, "precipitation_deposits": 30.0,
+      "wind_intensity": 30.0, "sun_azimuth_angle": 90.0, "sun_altitude_angle": 45.0,
+      "fog_density": 5.0, "fog_distance": 0.0, "fog_falloff": 0.3, "wetness": 40.0
+    }
+  },
+
+  "traffic_density_presets": {
+    "low": { "num_vehicles": 30, "tm_global_speed_difference_pct": 0 },
+    "mid": { "num_vehicles": 60, "tm_global_speed_difference_pct": 10 },
+    "high": { "num_vehicles": 120, "tm_global_speed_difference_pct": 20 }
+  },
+
+  "landmarks": {
+    "speed_limit_signal_type": "274",
+    "_note": "OpenDRIVE signal type for speed-limit signs. Query via map.get_all_landmarks_of_type('274').",
+    "sign_values_caveat": {
+      "_warning": "VERIFY BEFORE GENERATING. The Phase 1 doc targets 90-110 kph sign variety, but CARLA speed-limit signs come from each map's OpenDRIVE landmarks and stock towns commonly only define 30/60/90 kph. You may NOT get 110 on Town04/06.",
+      "how_to_check": "Enumerate map.get_all_landmarks_of_type('274') per town and list the distinct values BEFORE locking the scene matrix.",
+      "if_variety_is_insufficient": "Either accept the values the maps actually offer and amend the Phase 1 doc, or spawn custom sign props to add classes. Do not assume 90/100/110 exists.",
+      "values_assumed": [30, 60, 90],
+      "_note_now_load_bearing": "This caveat matters MORE now that signs are per-value classes: each distinct posted value becomes its own class with its own instance target. If a map only offers 30/60/90, that IS your sign class list."
+    },
+    "sign_label_sources": {
+      "visible_box": "world.get_environment_objects(carla.CityObjectLabel.TrafficSigns)",
+      "speed_value": "map.get_all_landmarks_of_type('274')",
+      "_note": "Signs need BOTH: the environment object gives the visible mesh box, the landmark gives the posted speed. Associate by proximity. Signs are NOT actors and have no instance-seg ID, so their occlusion check uses the depth camera, not instance segmentation."
+    }
+  },
+
+  "class_map": {
+    "_note": "Maps CARLA entities to dataset class names. Applied by the KITTI writer (step 9), NOT at capture time.",
+
+    "_KEY_IDEA": "This is a CONFIG KNOB, not a baked-in decision. Raw capture records blueprint_id + base_type + listed_speed_kph per object, so any re-map or class COLLAPSE is a free offline re-run. Record fine-grained, decide coarse later. You are never forced back onto the GPU to change your mind about classes.",
+
+    "active_preset": "fine",
+
+    "presets": {
+      "fine": {
+        "_note": "Per-type vehicles + per-value signs. 7 classes.",
+        "vehicle_by_base_type": {
+          "car": "car",
+          "truck": "truck",
+          "van": "van",
+          "motorcycle": "motorcycle"
+        },
+        "sign_by_speed_kph": {
+          "30": "speed_sign_30",
+          "60": "speed_sign_60",
+          "90": "speed_sign_90"
+        }
+      },
+      "coarse": {
+        "_note": "ESCAPE HATCH. Collapses all vehicle types into one class (5 classes total). Switch active_preset to 'coarse' and re-run the KITTI writer - no re-capture needed. Use this if the histogram shows starved vehicle types (motorcycle is the likely casualty on a highway).",
+        "vehicle_by_base_type": {
+          "car": "vehicle",
+          "truck": "vehicle",
+          "van": "vehicle",
+          "motorcycle": "vehicle"
+        },
+        "sign_by_speed_kph": {
+          "30": "speed_sign_30",
+          "60": "speed_sign_60",
+          "90": "speed_sign_90"
+        }
+      }
+    },
+
+    "base_type_source": "vehicle_blueprint.get_attribute('base_type') - CARLA exposes base_type on vehicle blueprints (car / truck / van / motorcycle / bicycle). Recorded per actor at capture so the mapping is reproducible offline.",
+
+    "_WARNING_class_balance": "'fine' means 7 classes, each needing its own 500-1500 instance target per the Phase 1 doc - i.e. ~3.5k-10.5k instances, up from ~1k-3k with a single vehicle class. Cars will be abundant. The at-risk classes are motorcycle (rare on highways) and all three sign classes (you drive a long way between signs). Read the histogram before assuming 'fine' is affordable; if it is not, flip to 'coarse' for vehicles and spend your top-up scenes on signs instead."
+  }
+}

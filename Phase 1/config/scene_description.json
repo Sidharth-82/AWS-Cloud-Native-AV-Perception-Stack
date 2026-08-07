@@ -1,0 +1,156 @@
+{
+  "schema_version": "1.0",
+
+  "_note_scope": "Scene/run configuration ONLY - the scenario matrix. Every frame in dataset_example.json joins to exactly one scene via scene_id.",
+
+  "_references": {
+    "weather_preset": "resolves against weather_presets in CARLA_config.json",
+    "traffic_preset": "resolves against traffic_density_presets in CARLA_config.json",
+    "ego_vehicle_and_sensors": "ego_config.json (static across all scenes)",
+    "_note": "The config loader must join these three files. Scenes reference presets BY NAME so a preset is defined once and changed in one place."
+  },
+
+  "split_policy": {
+    "rule": "Split at run/scene level. All frames from a scene belong to exactly one split; no scene spans two splits.",
+    "train": "Town04 + Town06, day+night, low+high density.",
+    "val": "Town04 + Town06 but different routes/seeds and a density (mid) unseen in train. Used for model selection, so distribution stays close to train.",
+    "test": "Town05 - a completely HELD-OUT MAP. This is the real generalization probe: the model has never seen this geometry.",
+    "_note": "Test-on-unseen-map is the strongest defensible answer to the Phase 1 uniformity pitfall. Record this table verbatim in the data card."
+  },
+
+  "scenes": [
+    {
+      "scene_id": 1, "scene_name": "town04_day_low_a", "split": "train",
+      "map": "Town04", "route": { "spawn_point_index": 12, "description": "highway loop, clockwise" },
+      "weather_preset": "clear_day", "time_of_day": "day",
+      "traffic_preset": "low",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 2001, "spawn_rng": 2001 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_001/" }
+    },
+    {
+      "scene_id": 2, "scene_name": "town04_day_high_a", "split": "train",
+      "map": "Town04", "route": { "spawn_point_index": 12, "description": "highway loop, clockwise" },
+      "weather_preset": "clear_day", "time_of_day": "day",
+      "traffic_preset": "high",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 2002, "spawn_rng": 2002 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_002/" }
+    },
+    {
+      "scene_id": 3, "scene_name": "town04_night_low_a", "split": "train",
+      "map": "Town04", "route": { "spawn_point_index": 12, "description": "highway loop, clockwise" },
+      "weather_preset": "clear_night", "time_of_day": "night",
+      "traffic_preset": "low",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 2003, "spawn_rng": 2003 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_003/" }
+    },
+    {
+      "scene_id": 4, "scene_name": "town04_night_high_a", "split": "train",
+      "map": "Town04", "route": { "spawn_point_index": 33, "description": "highway loop + tunnel section" },
+      "weather_preset": "clear_night", "time_of_day": "night",
+      "traffic_preset": "high",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 2004, "spawn_rng": 2004 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_004/" }
+    },
+    {
+      "scene_id": 5, "scene_name": "town06_day_low_a", "split": "train",
+      "map": "Town06", "route": { "spawn_point_index": 8, "description": "long straight highway, on-ramp merges" },
+      "weather_preset": "clear_day", "time_of_day": "day",
+      "traffic_preset": "low",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 2005, "spawn_rng": 2005 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_005/" }
+    },
+    {
+      "scene_id": 6, "scene_name": "town06_day_high_a", "split": "train",
+      "map": "Town06", "route": { "spawn_point_index": 8, "description": "long straight highway, on-ramp merges" },
+      "weather_preset": "clear_day", "time_of_day": "day",
+      "traffic_preset": "high",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 2006, "spawn_rng": 2006 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_006/" }
+    },
+    {
+      "scene_id": 7, "scene_name": "town06_night_low_a", "split": "train",
+      "map": "Town06", "route": { "spawn_point_index": 45, "description": "multi-lane highway, lane-drop section" },
+      "weather_preset": "clear_night", "time_of_day": "night",
+      "traffic_preset": "low",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 2007, "spawn_rng": 2007 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_007/" }
+    },
+    {
+      "scene_id": 8, "scene_name": "town06_night_high_a", "split": "train",
+      "map": "Town06", "route": { "spawn_point_index": 45, "description": "multi-lane highway, lane-drop section" },
+      "weather_preset": "clear_night", "time_of_day": "night",
+      "traffic_preset": "high",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 2008, "spawn_rng": 2008 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_008/" }
+    },
+    {
+      "scene_id": 9, "scene_name": "town04_day_mid_b", "split": "val",
+      "map": "Town04", "route": { "spawn_point_index": 71, "description": "highway loop, COUNTER-clockwise (unseen direction)" },
+      "weather_preset": "clear_day", "time_of_day": "day",
+      "traffic_preset": "mid",
+      "ego_target_speed_kph": 90,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 3001, "spawn_rng": 3001 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_009/" }
+    },
+    {
+      "scene_id": 10, "scene_name": "town06_night_mid_b", "split": "val",
+      "map": "Town06", "route": { "spawn_point_index": 102, "description": "highway, unseen route segment" },
+      "weather_preset": "clear_night", "time_of_day": "night",
+      "traffic_preset": "mid",
+      "ego_target_speed_kph": 90,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 3002, "spawn_rng": 3002 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_010/" }
+    },
+    {
+      "scene_id": 11, "scene_name": "town05_day_low_a", "split": "test",
+      "map": "Town05", "route": { "spawn_point_index": 20, "description": "HELD-OUT MAP - highway/arterial" },
+      "weather_preset": "clear_day", "time_of_day": "day",
+      "traffic_preset": "low",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 4001, "spawn_rng": 4001 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_011/" }
+    },
+    {
+      "scene_id": 12, "scene_name": "town05_night_high_a", "split": "test",
+      "map": "Town05", "route": { "spawn_point_index": 20, "description": "HELD-OUT MAP - highway/arterial" },
+      "weather_preset": "clear_night", "time_of_day": "night",
+      "traffic_preset": "high",
+      "ego_target_speed_kph": 100,
+      "duration_s": 300, "expected_frames": 600,
+      "seeds": { "traffic_manager": 4002, "spawn_rng": 4002 },
+      "storage": { "s3_prefix": "s3://perception-project-bucket/raw/scene_012/" }
+    }
+  ],
+
+  "totals": {
+    "scenes": 12,
+    "expected_frames": 7200,
+    "split_frames": { "train": 4800, "val": 1200, "test": 1200 },
+    "_note": "~7.2k frames vs the ~10k target in the Phase 1 doc. Deliberate: generate this matrix FIRST, read the per-class instance histogram, then add targeted top-up scenes for whatever is thin (expected: speed signs). Do not pad the count blindly."
+  },
+
+  "topup_scenes": {
+    "_status": "EMPTY UNTIL THE HISTOGRAM EXISTS (Phase 1 step 9.v).",
+    "_note": "Sign instances are the expected bottleneck - you drive a long way between signs. Top-up scenes should target sign-dense routes, and must still obey the split policy (a top-up scene joins exactly one split).",
+    "scenes": []
+  }
+}

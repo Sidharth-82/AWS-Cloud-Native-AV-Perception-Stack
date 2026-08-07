@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+
+  "_note_scope": "Static ego-vehicle configuration. Constant across ALL scenes. Anything that varies per run (target speed, spawn point, seeds) belongs in scene_description.json instead.",
+
+  "ego_vehicle": {
+    "blueprint": "vehicle.tesla.model3",
+    "role_name": "hero",
+    "_note": "Sedan, per the Phase 0 scope lock. Deliberately FIXED across every scene: swapping the ego between runs changes camera height and mounting geometry, which shifts the whole data distribution. That is a confound, not useful diversity."
+  },
+
+  "sensor_rig": {
+    "rig_id": "front_v1",
+    "_note": "Front-focused MVP rig, per the Phase 0 hero (forward-driving: lead-vehicle distance + speed signs ahead). Designed so 5 additional cameras can be added later without a schema change.",
+    "_extrinsic_convention": "T_sensor_to_ego - sensor pose expressed in the ego frame. See coordinate_conventions in CARLA_config.json.",
+
+    "sensors": {
+      "cam_front": {
+        "type": "sensor.camera.rgb",
+        "width": 1280,
+        "height": 720,
+        "fov_deg": 90.0,
+        "distortion": "none (CARLA cameras are ideal pinhole)",
+        "T_sensor_to_ego": {
+          "position": { "x": 1.5, "y": 0.0, "z": 1.6 },
+          "rotation": { "roll": 0.0, "pitch": 0.0, "yaw": 0.0 }
+        },
+        "_note": "Intrinsics (fx, fy, cx, cy) are DERIVED from width/height/fov, not stored: fx = fy = width / (2 * tan(fov/2)); cx = width/2; cy = height/2. Storing both invites drift."
+      },
+      "cam_front_instance_seg": {
+        "type": "sensor.camera.instance_segmentation",
+        "width": 1280,
+        "height": 720,
+        "fov_deg": 90.0,
+        "co_located_with": "cam_front",
+        "_note": "MUST share intrinsics/extrinsics with cam_front so per-actor ID pixels align with projected boxes. Drives the VEHICLE visibility filter (Phase 1 step 8.iii)."
+      },
+      "cam_front_depth": {
+        "type": "sensor.camera.depth",
+        "width": 1280,
+        "height": 720,
+        "fov_deg": 90.0,
+        "co_located_with": "cam_front",
+        "_note": "Drives the SIGN occlusion check. Signs are static map objects with no actor instance ID, so instance-seg cannot filter them - compare the sign's projected distance against the depth buffer instead."
+      },
+      "lidar_top": {
+        "type": "sensor.lidar.ray_cast",
+        "channels": 64,
+        "range_m": 100.0,
+        "points_per_second": 1300000,
+        "rotation_frequency": 20.0,
+        "upper_fov_deg": 10.0,
+        "lower_fov_deg": -30.0,
+        "T_sensor_to_ego": {
+          "position": { "x": 0.0, "y": 0.0, "z": 1.8 },
+          "rotation": { "roll": 0.0, "pitch": 0.0, "yaw": 0.0 }
+        },
+        "_note": "rotation_frequency MUST equal world_settings.sim_hz (20) so exactly one full sweep completes per tick. Mismatch gives partial or duplicated sweeps. This is the primary source for lead-vehicle distance."
+      },
+      "imu": {
+        "type": "sensor.other.imu",
+        "co_located_with": "ego_origin",
+        "_note": "Ego-state, NOT a perception input. The detector never sees this. Recorded for ego-motion in tracking (Phase 0 supporting task)."
+      },
+      "gnss": {
+        "type": "sensor.other.gnss",
+        "co_located_with": "ego_origin",
+        "_note": "Ego-state, NOT a perception input. See imu note."
+      }
+    }
+  }
+}
