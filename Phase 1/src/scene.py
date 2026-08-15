@@ -92,11 +92,22 @@ class Scene:
         return False   # False = don't suppress an exception, just clean up
     
     def world_setup(self):
-        ## Set map and weather and get info about map
-        self.world = self.carla_client.load_world(self.map)
+        ## Set map and weather and get info about map.
+        ## Only reload when the map CHANGES: CARLA leaks across load_world calls and
+        ## crashes after ~5 reloads, so reloading the same map every scene (scenes 1-4
+        ## are all Town04) is what tipped scene 5's Town06 load over. The previous
+        ## scene's _cleanup already destroyed its actors, so reusing a same-map world
+        ## is safe; sync settings + weather are re-applied below regardless.
+        current_map = self.world.get_map().name.split("/")[-1]   # e.g. "Town04"
+        if current_map != self.map:
+            print(f"[scene {self.scene_id}] loading map {self.map} (was {current_map}) ...", flush=True)
+            self.world = self.carla_client.load_world(self.map)
+        else:
+            print(f"[scene {self.scene_id}] reusing loaded map {self.map} (no reload)", flush=True)
         bp_lib = self.world.get_blueprint_library()
         spawns = self.world.get_map().get_spawn_points() # list[carla.Transform]
         self.world.set_weather(carla.WeatherParameters(**self.weather))
+        print(f"[scene {self.scene_id}] map ready; {len(spawns)} spawn points", flush=True)
         
         ##Settings + sync mode
         
@@ -116,6 +127,7 @@ class Scene:
         ego_bp = bp_lib.find(self.ego_config["blueprint"])
         ego_bp.set_attribute("role_name", "hero")
         self.ego_actor = self.world.spawn_actor(ego_bp, spawns[self.spawn_point_index])
+        print(f"[scene {self.scene_id}] ego spawned at spawn index {self.spawn_point_index}", flush=True)
         
         for name, sensor in self.sensor_config.items():
             if "camera" in sensor["type"]:
@@ -158,6 +170,7 @@ class Scene:
             q = Queue()
             self.queues[name] = q
             actor.listen(lambda data, q=q: q.put((data.frame, data)))
+        print(f"[scene {self.scene_id}] {len(self.sensor_actors)} sensors attached", flush=True)
         
         ## Traffic Batch Spawn
         random.seed(self.spawn_rng_seed)
@@ -178,6 +191,7 @@ class Scene:
         batch = [command.SpawnActor(random.choice(vehicle_bps), points[i]) for i in range(n)]
         resp = self.carla_client.apply_batch_sync(batch, False)
         self.traffic_actors = [r.actor_id for r in resp if not r.error]
+        print(f"[scene {self.scene_id}] traffic spawned: {len(self.traffic_actors)}/{n}", flush=True)
         
         ##Signs
         signs = self.world.get_environment_objects(carla.CityObjectLabel.TrafficSigns)
@@ -191,10 +205,12 @@ class Scene:
                 nearest_d = sign_pos.distance(nearest.transform.location)
                 if nearest_d <= self.THRESHOLD_M:
                     self.sign_data.append((sign.id, sign.bounding_box, nearest.value))
+        print(f"[scene {self.scene_id}] world_setup complete; {len(self.sign_data)} signs", flush=True)
 
         
 
     def start(self):
+        print(f"[scene {self.scene_id}] start(): enabling autopilot", flush=True)
         self.tm.global_percentage_speed_difference(self.traffic["tm_global_speed_difference_pct"])
         batch = [command.SetAutopilot(aid, True, self.tm_port) for aid in self.traffic_actors + [self.ego_actor.id]]
         resp = self.carla_client.apply_batch_sync(batch, False)

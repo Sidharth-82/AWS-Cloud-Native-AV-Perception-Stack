@@ -15,4 +15,9 @@ RUN pip install --no-cache-dir \
       boto3==1.33.13 \
       Pillow==9.5.0
 
+# Unbuffered stdout/stderr so print()/tracebacks appear live and survive a hard
+# crash (segfault/OOM). Without this, Docker's non-TTY pipe block-buffers Python
+# output and a killed process loses it all. Placed after pip so the layer stays cached.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /workspace

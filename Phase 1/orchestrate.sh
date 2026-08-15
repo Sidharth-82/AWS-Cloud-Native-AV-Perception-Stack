@@ -47,14 +47,20 @@ sleep 30   # port opens before the world is fully ready for RPC/load_world
 echo "[orchestrate] building client image ($CLIENT_IMAGE)..."
 docker build -t "$CLIENT_IMAGE" -f Dockerfile .
 
-# 4. Run the capture subset. _upload_scene is now real: each scene is pushed to S3
-#    (via the EC2 role), the local copy deleted, then the run manifest + configs are
-#    uploaded. This is the Tier-2 verification path. Drop the --no-upload flag below to
-#    keep everything local for inspection instead (Tier-1 smoke).
+# 4. Run the capture subset -- ONE run per map (runs 1-3 = Town04 / Town06 / Town05),
+#    each its own client process. This dodges CARLA's cross-reload client-thread crash
+#    (PyEval_SaveThread: NULL tstate): every load_world is a fresh process's first op, no
+#    lingering sensor threads; scene.py's dedup reuses the map for the rest of the run.
+#    Per-run processes also keep provenance clean -- each stamps its own metadata entry.
 #    --net=host so the client reaches localhost:2000 AND the IMDS role creds. Mount
 #    HERE -> /workspace so config/ resolves and output lands in ./_scratch on the host.
-echo "[orchestrate] running capture (run 1, subset=5 frames/scene) ..."
-docker run --rm --net=host -v "$HERE":/workspace "$CLIENT_IMAGE" \
-    python src/capture.py --run 1 --output-root /workspace/_scratch --max-frames-per-scene 5 --no-upload
+#    --no-upload keeps it local (Tier-1 smoke); drop it for the Tier-2 S3 verification.
+echo "[orchestrate] running capture (runs 1-3 = one map each, subset=5 frames/scene) ..."
+for run in 1 2 3; do
+    echo "[orchestrate] --- run $run ---"
+    docker run --rm --net=host -v "$HERE":/workspace "$CLIENT_IMAGE" \
+        python -u src/capture.py --run "$run" \
+        --output-root /workspace/_scratch --max-frames-per-scene 5 --no-upload
+done
 
 echo "[orchestrate] done. Output in ./_scratch/scene_XXX/ (records.jsonl + sensor files)."
