@@ -1,0 +1,7 @@
+# Shell scripts and the Dockerfile run on Linux (EC2) after scp, so they MUST use
+# LF line endings. CRLF breaks bash -- `set -euo pipefail\r` becomes an invalid
+# option, and a `#!/usr/bin/env bash\r` shebang fails to find the interpreter.
+# Windows editors (VS Code) handle LF fine, so forcing LF here is safe and prevents
+# the CRLF from coming back on the next checkout/clone.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
