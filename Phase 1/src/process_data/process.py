@@ -37,6 +37,7 @@ import argparse
 import hashlib
 import json
 import platform
+import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -104,11 +105,17 @@ class Processor:
     """One offline pass: a split's captured runs -> a KITTI tree, published."""
 
     def __init__(self, output_root, split, raw_root=None, run_ids=None,
-                 configs=CONFIGS, include_lidar=False, samples=8, limit=None,
+                 configs=CONFIGS, include_lidar=True, samples=8, limit=None,
                  upload=True, topup_class=None, topup_frames=None, topup_seed=0,
-                 prefetch=64, max_workers=16):
+                 prefetch=64, max_workers=16, version=None):
         self.output_root = Path(output_root)
         self.split = split
+        self.version = version or configs["metadata.json"].get("dataset_version")
+        if not self.version:
+            raise KeyError(
+                "no dataset version: set metadata.json dataset_version or pass --version. "
+                "The S3 prefix is versioned so a re-run cannot overwrite a published "
+                "dataset, and an unversioned publish would silently do exactly that.")
         self.raw_root = raw_root
         self.configs = configs
         self.include_lidar = include_lidar
@@ -156,15 +163,38 @@ class Processor:
                 f"runs {missing} have no 'split' flag in metadata.json. The processor "
                 "selects work by run-level split; add it, keeping every run split-pure.")
 
-        chosen = [r["run_id"] for r in self.runs
-                  if r["split"] == self.split and r.get("status") == "complete"]
-        if not chosen:
-            states = ", ".join(f"run {r['run_id']}: split={r['split']!r} "
-                               f"status={r.get('status')!r}" for r in self.runs)
-            raise RuntimeError(
-                f"no run is both split={self.split!r} and status='complete' ({states}). "
-                "Capture stamps status when it finishes; pass --runs to force.")
-        return chosen
+        mine = [r for r in self.runs if r["split"] == self.split]
+        chosen = [r["run_id"] for r in mine if r.get("status") == "complete"]
+        if chosen:
+            return chosen
+
+        # metadata.json's status is only a PROXY for "this run's frames exist".
+        # It is also a version-controlled config file, so deploying code overwrites
+        # it and wipes the status capture stamped -- the data is still on disk, but
+        # the record of it is gone. So fall back to checking the actual precondition
+        # rather than the proxy, loudly enough that a genuinely missing capture is
+        # still obvious.
+        on_disk = [r["run_id"] for r in mine if self._raw_present(r["scene_ids"])]
+        if on_disk:
+            print(f"[process] WARNING: runs {on_disk} are not marked complete in "
+                  f"metadata.json, but their raw frames ARE in {self.raw_root}. "
+                  "Using them. (A code deploy overwrites the status capture stamped.)")
+            return on_disk
+
+        states = ", ".join(f"run {r['run_id']}: split={r['split']!r} "
+                           f"status={r.get('status')!r}" for r in self.runs)
+        raise RuntimeError(
+            f"no run for split={self.split!r} is marked complete, and none has raw "
+            f"frames in {self.raw_root!r} ({states}). Capture it first, or pass --runs.")
+
+    def _raw_present(self, scene_ids) -> bool:
+        """True when every scene of a run has its records file in the raw root."""
+        if not self.raw_root:
+            return False           # S3 source: no cheap local check, trust the status
+        naming = self.configs["CARLA_config.json"]["naming_convention"]
+        root = Path(self.raw_root)
+        return all((root / naming["scene_dir"].format(scene_id=sid) /
+                    kitti.RECORDS_FILENAME).is_file() for sid in scene_ids)
 
     def _validate(self, scene_entries):
         """
@@ -223,8 +253,16 @@ class Processor:
             histogram.update(counts)
 
         if self.samples:
-            written = render_samples(self.tree, self.output_root / "samples" / self.split,
-                                     n=self.samples)
+            # Clear before rendering, for the same reason write_kitti clears the tree:
+            # renders are named after the frame they came from, so a rewrite that
+            # renumbers scenes or changes the class map leaves the previous run's
+            # renders sitting beside the new ones. They then get published as part of
+            # this dataset while showing frames it does not contain and classes it does
+            # not label. Append keeps them, since there the tree is only growing.
+            samples_dir = self.output_root / "samples" / self.split
+            if not self.append and samples_dir.is_dir():
+                shutil.rmtree(samples_dir)
+            written = render_samples(self.tree, samples_dir, n=self.samples)
             print(f"[process] {len(written)} sample renders")
 
         summary = self._write_summary(per_scene, histogram, stats)
@@ -321,6 +359,89 @@ class Processor:
         }
         summary_path.write_text(json.dumps(summary, indent=1), encoding="utf-8")
         return summary
+    def _upload_tree(self):
+        """
+        Publish this split to s3://<bucket>/processed/<dataset_name>/<split>/.
+
+        The only thing this pipeline puts in S3. Raw frames never go up, so what
+        is stored is the training data itself plus the summary that describes
+        it -- regenerable from raw and a commit, but raw lives only as long as
+        the instance does.
+        """
+        bucket = kitti._bucket(self.configs)
+        # VERSIONED prefix. Without it every publish lands on the same keys and
+        # overwrites the last one, so there is no way back to a dataset a model was
+        # actually trained on -- and no way to compare two rounds of the top-up loop.
+        # The version is stable across the three per-split invocations of one build
+        # because it comes from config (or one --version passed to all three).
+        dataset_key = (f"processed/{self.configs['metadata.json']['dataset_name']}/"
+                       f"{self.version}/")
+        root_key = f"{dataset_key}{self.split}/"
+        s3 = boto3.client("s3", config=Config(
+            retries={"total_max_attempts": 5, "mode": "adaptive"},
+            max_pool_connections=_UPLOAD_WORKERS))
+
+        # Three things land, at three different depths. The S3 layout mirrors the local
+        # one exactly, so a `aws s3 sync` of the dataset prefix reproduces the directory
+        # you had on the box.
+        #   <dataset>/<split>/...            the KITTI tree
+        #   <dataset>/samples/<split>/...    the annotated renders
+        #   <dataset>/{dataset_summary,class_histogram}
+        # The last two are re-uploaded on every split, which is the point: whoever pulls
+        # the bucket sees a histogram matching whatever is currently in it.
+        samples_dir = self.output_root / "samples" / self.split
+        jobs = [(p, root_key + p.relative_to(self.tree).as_posix())
+                for p in self.tree.rglob("*") if p.is_file()]
+        jobs += [(p, f"{dataset_key}samples/{self.split}/{p.relative_to(samples_dir).as_posix()}")
+                 for p in samples_dir.rglob("*") if p.is_file()] if samples_dir.is_dir() else []
+        jobs += [(self.output_root / n, dataset_key + n)
+                 for n in ("dataset_summary.json", "class_histogram.md")
+                 if (self.output_root / n).is_file()]
+
+        with ThreadPoolExecutor(max_workers=_UPLOAD_WORKERS) as pool:
+            list(pool.map(lambda j: s3.upload_file(str(j[0]), bucket, j[1]), jobs))
+
+        # Verify by listing rather than N HEADs, over ONE scope covering every key we
+        # just wrote. Scoping the check to the split tree is what previously reported
+        # the dataset-root files as missing when they had uploaded fine; listing the
+        # whole dataset prefix costs one request per 1000 keys and cannot drift out of
+        # step when another artifact location is added.
+        uploaded = set()
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=dataset_key):
+            uploaded.update(o["Key"] for o in page.get("Contents", []))
+
+        ours = {key for _, key in jobs}
+        missing = ours - uploaded
+        if missing:
+            raise RuntimeError(f"{len(missing)}/{len(jobs)} objects missing after upload "
+                               f"(e.g. {next(iter(missing))})")
+        print(f"[process] uploaded {len(jobs)} files to s3://{bucket}/{dataset_key} "
+              f"({self.split} tree + samples + dataset summary)")
+
+        # PRUNE. Uploading alone makes the prefix a UNION of every publish ever made
+        # to it, not a copy of this one: a rewrite that renames or drops frames leaves
+        # the old objects sitting there, and the prefix ends up holding two datasets
+        # wearing one name. Deleting what we did not just write makes it a mirror.
+        #
+        # Scoped to THIS split's two prefixes -- never the other splits, never the
+        # dataset-root summaries -- and skipped entirely on append, where the whole
+        # point is to add to what is already there. Runs after verification, so a
+        # failed upload can never delete the good copy it failed to replace.
+        if self.append:
+            return
+        owned = (root_key, f"{dataset_key}samples/{self.split}/")
+        stale = sorted(k for k in uploaded
+                       if k.startswith(owned) and k not in ours)
+        if not stale:
+            return
+        for i in range(0, len(stale), 1000):        # delete_objects caps at 1000
+            s3.delete_objects(Bucket=bucket, Delete={
+                "Objects": [{"Key": k} for k in stale[i:i + 1000]], "Quiet": True})
+        print(f"[process] pruned {len(stale)} stale objects under {root_key} "
+              f"(e.g. {stale[0]})")
+
+
 
 def merge_summaries(output_root: Path, configs: dict) -> dict:
     """
@@ -465,60 +586,6 @@ def write_histogram_report(output_root: Path, configs: dict, merged: dict) -> st
     (output_root / "class_histogram.md").write_text(report, encoding="utf-8")
     return report
 
-    def _upload_tree(self):
-        """
-        Publish this split to s3://<bucket>/processed/<dataset_name>/<split>/.
-
-        The only thing this pipeline puts in S3. Raw frames never go up, so what
-        is stored is the training data itself plus the summary that describes
-        it -- regenerable from raw and a commit, but raw lives only as long as
-        the instance does.
-        """
-        bucket = kitti._bucket(self.configs)
-        dataset_key = f"processed/{self.configs['metadata.json']['dataset_name']}/"
-        root_key = f"{dataset_key}{self.split}/"
-        s3 = boto3.client("s3", config=Config(
-            retries={"total_max_attempts": 5, "mode": "adaptive"},
-            max_pool_connections=_UPLOAD_WORKERS))
-
-        # Three things land, at three different depths. The S3 layout mirrors the local
-        # one exactly, so a `aws s3 sync` of the dataset prefix reproduces the directory
-        # you had on the box.
-        #   <dataset>/<split>/...            the KITTI tree
-        #   <dataset>/samples/<split>/...    the annotated renders
-        #   <dataset>/{dataset_summary,class_histogram}
-        # The last two are re-uploaded on every split, which is the point: whoever pulls
-        # the bucket sees a histogram matching whatever is currently in it.
-        samples_dir = self.output_root / "samples" / self.split
-        jobs = [(p, root_key + p.relative_to(self.tree).as_posix())
-                for p in self.tree.rglob("*") if p.is_file()]
-        jobs += [(p, f"{dataset_key}samples/{self.split}/{p.relative_to(samples_dir).as_posix()}")
-                 for p in samples_dir.rglob("*") if p.is_file()] if samples_dir.is_dir() else []
-        jobs += [(self.output_root / n, dataset_key + n)
-                 for n in ("dataset_summary.json", "class_histogram.md")
-                 if (self.output_root / n).is_file()]
-
-        with ThreadPoolExecutor(max_workers=_UPLOAD_WORKERS) as pool:
-            list(pool.map(lambda j: s3.upload_file(str(j[0]), bucket, j[1]), jobs))
-
-        # Verify by listing rather than N HEADs, over ONE scope covering every key we
-        # just wrote. Scoping the check to the split tree is what previously reported
-        # the dataset-root files as missing when they had uploaded fine; listing the
-        # whole dataset prefix costs one request per 1000 keys and cannot drift out of
-        # step when another artifact location is added.
-        uploaded = set()
-        paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=bucket, Prefix=dataset_key):
-            uploaded.update(o["Key"] for o in page.get("Contents", []))
-
-        missing = {key for _, key in jobs} - uploaded
-        if missing:
-            raise RuntimeError(f"{len(missing)}/{len(jobs)} objects missing after upload "
-                               f"(e.g. {next(iter(missing))})")
-        print(f"[process] uploaded {len(jobs)} files to s3://{bucket}/{dataset_key} "
-              f"({self.split} tree + samples + dataset summary)")
-
-
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Phase 1 offline processing (steps 8-10)")
     ap.add_argument("--split", default=None,
@@ -536,12 +603,19 @@ if __name__ == "__main__":
     ap.add_argument("--runs", type=int, nargs="+", default=None,
                     help="override run selection (default: runs flagged with --split "
                          "whose status is complete)")
-    ap.add_argument("--include-lidar", action="store_true",
-                    help="also write velodyne/*.bin (off by default; v1 is camera-only)")
+    ap.add_argument("--no-lidar", action="store_true",
+                    help="skip velodyne/*.bin. LiDAR is written by default -- the sweep "
+                         "is captured either way, so dropping it discards data that "
+                         "cost GPU time.")
+    ap.add_argument("--version", default=None,
+                    help="dataset version for the S3 prefix (default: metadata.json "
+                         "dataset_version). Pass the SAME value for every split of one "
+                         "build, or the splits land under different versions.")
     ap.add_argument("--max-frames", type=int, default=None,
                     help="cap frames written (subset smoke test)")
     ap.add_argument("--samples", type=int, default=8,
-                    help="annotated sample renders (0 to skip)")
+                    help="annotated sample renders: 0 to skip, -1 to render EVERY frame "
+                         "(for VLM/automated QA over the whole split)")
     ap.add_argument("--no-upload", action="store_true",
                     help="skip the S3 publish and leave the tree local")
     ap.add_argument("--topup-class", default=None,
@@ -561,7 +635,8 @@ if __name__ == "__main__":
 
     summary = Processor(
         args.output_root, args.split, raw_root=args.raw_root, run_ids=args.runs,
-        include_lidar=args.include_lidar, limit=args.max_frames, samples=args.samples,
+        include_lidar=not args.no_lidar, limit=args.max_frames, samples=args.samples,
+        version=args.version,
         upload=not args.no_upload, topup_class=args.topup_class,
         topup_frames=args.topup_frames, topup_seed=args.topup_seed,
     ).run()

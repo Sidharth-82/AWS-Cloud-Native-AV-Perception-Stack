@@ -15,10 +15,11 @@ def iter_cycle_frames(run_ids, configs, buffers=...) -> Iterator[(record, dict)]
       into multiple runs (one client process per map), and splits cut across
       them, so the offline passes almost always want this one.
 
-def label_frame(record, buffers, configs) -> (lines, stats)
+def label_frame(record, buffers, configs) -> (lines, track_ids, stats)
     - Phase 1 step 8 for one frame: project every recorded box into the image,
       cull what the camera cannot actually see, and emit KITTI label lines for
-      what survives. Returns drop counts by reason alongside the labels.
+      what survives, each with its ground-truth track id. Returns drop counts
+      by reason alongside the labels.
 
 def write_kitti(output_root, run_ids, ...) -> stats
     - Phase 1 step 9: stream a run set and write one flat KITTI tree
@@ -769,9 +770,14 @@ def label_frame(record: dict, buffers: dict, configs: dict = CONFIGS):
         configs: the config bundle.
 
     Returns:
-        (lines: list[str], stats: dict) -- stats counts kept objects per class
-        and drops per reason, so a systematically-vanishing class is visible
-        rather than silently absent from the histogram.
+        (lines, track_ids, stats). track_ids is POSITIONALLY ALIGNED with lines:
+        track_ids[i] identifies the object labelled on lines[i]. KITTI's detection
+        format has no identity column -- and its 16th field is conventionally the
+        confidence score, so an id put there would be read as a score -- hence the
+        parallel list, carried in frame_index.json rather than in the label file.
+        stats counts kept objects per class and drops per reason, so a
+        systematically-vanishing class is visible rather than silently absent
+        from the histogram.
     """
     depth = buffers["cam_front_depth"]
     seg = buffers["cam_front_instance_seg"]
@@ -779,13 +785,23 @@ def label_frame(record: dict, buffers: dict, configs: dict = CONFIGS):
     class_map = configs["CARLA_config.json"]["class_map"]
     R, t = _camera_pose(record["ego_pose"], configs)
 
-    lines, kept, dropped = [], {}, {}
+    lines, track_ids, kept, dropped = [], [], {}, {}
 
     def _drop(reason):
         dropped[reason] = dropped.get(reason, 0) + 1
 
+    # A preset with no sign classes excludes signs DELIBERATELY. Reported under its
+    # own reason rather than as 'unmapped_class', which would put thousands of
+    # intentional exclusions under a label that means "this object fell through a
+    # gap in the class map" -- the one stat that is supposed to expose real bugs.
+    preset = class_map["presets"][class_map["active_preset"]]
+    signs_excluded = not preset["sign_by_speed_kph"]
+
     for obj in record["actors"]:
         is_sign = obj["source"] != "carla_actor"
+        if is_sign and signs_excluded:
+            _drop("signs_excluded")
+            continue
         cls = _class_of(obj, class_map)
         if cls is None:
             _drop("unmapped_class")
@@ -812,10 +828,16 @@ def label_frame(record: dict, buffers: dict, configs: dict = CONFIGS):
             _drop("occluded")
             continue
 
+        # Appended together, so the two lists cannot drift out of alignment.
+        # global_actor_id is scene-scoped ("002_2673"), which is what makes it a
+        # usable track id: CARLA actor ids are stable for an actor's lifetime
+        # within an episode, and the scene prefix keeps ids from colliding across
+        # scenes that reuse the same numbers.
         lines.append(_label_line(cls, obj, view, _occlusion_level(frac), R, t))
+        track_ids.append(obj["global_actor_id"])
         kept[cls] = kept.get(cls, 0) + 1
 
-    return lines, {"kept": kept, "dropped": dropped}
+    return lines, track_ids, {"kept": kept, "dropped": dropped}
 
 
 ### KITTI packaging below
@@ -878,7 +900,7 @@ def _select_frames(select_class, select_n, seed, run_ids, configs, scene_ids,
                              prefetch, max_workers, scene_ids, raw_root,
                              None, already)
     for record, bufs in scan:
-        _, stats = label_frame(record, bufs, configs)
+        _, _, stats = label_frame(record, bufs, configs)
         if stats["kept"].get(select_class):
             matches.append(record["frame_id"])
 
@@ -893,7 +915,7 @@ def write_kitti(
     output_root,
     run_ids=None,
     configs: dict = CONFIGS,
-    include_lidar: bool = False,
+    include_lidar: bool = True,
     limit: int = None,
     prefetch: int = 64,
     max_workers: int = 16,
@@ -922,10 +944,10 @@ def write_kitti(
     Args:
         output_root: directory to write the tree into (created if absent).
         run_ids: runs to include; defaults to every 'complete' run.
-        include_lidar: also write velodyne/*.bin. Off by default -- the v1
-            detector is camera-only, and it costs another GET per frame plus
-            roughly 0.5 MB per frame on disk. calib carries Tr_velo_to_cam
-            either way, so turning it on later needs no other change.
+        include_lidar: also write velodyne/*.bin. ON by default: the sweep is
+            captured regardless, so omitting it from the published dataset just
+            throws away data that cost GPU time to make. Costs one extra read
+            per frame and roughly 0.5 MB per frame on disk.
         limit: stop after this many frames (subset runs / smoke tests).
         scene_ids: restrict to these scenes within the selected runs.
         raw_root: local capture scratch to read (the normal flow); None reads S3.
@@ -963,18 +985,21 @@ def write_kitti(
 
     calib = _calib_text(configs)
 
-    # Append picks up where the tree left off. Numbering continues from the
-    # highest existing stem rather than from the index length, so a tree that
-    # was topped up before still extends cleanly.
+    # Files are named by frame_id (SCENE_CARLAFRAME, e.g. 002_231559), NOT by a
+    # running %06d counter. Sequential numbering is the KITTI convention and buys
+    # drop-in compatibility with its tooling, but it makes every filename opaque:
+    # nothing on disk says which scene or sim tick a frame came from, so any manual
+    # or VLM-driven QA pass has to join through frame_index.json to say anything
+    # about a file. frame_id is already unique (scene ids are global, carla_frame is
+    # monotonic within a scene), which also makes appends idempotent -- re-writing a
+    # frame overwrites itself instead of landing again under a fresh number.
     index_path = root / "frame_index.json"
     index = json.loads(index_path.read_text()) if (append and index_path.is_file()) else {}
-    next_stem = (max((int(k) for k in index), default=-1) + 1) if index else 0
 
     # A frame already in the tree is never written twice. Without this, re-mining a
-    # run that was already processed silently duplicates its frames -- same pixels,
-    # same objects, new stems -- which inflates the histogram and leaks near-identical
-    # images across the tree.
-    already = {e["frame_id"] for e in index.values()}
+    # run that was already processed re-does work and re-inflates the histogram.
+    # The stem IS the frame_id, so the index keys are the guard.
+    already = set(index)
 
     frame_ids = None
     if select_class is not None:
@@ -992,8 +1017,9 @@ def write_kitti(
     stream = iter_cycle_frames(run_ids, configs, tuple(buffers), prefetch, max_workers,
                                scene_ids, raw_root, frame_ids, already)
     for record, bufs in islice(stream, limit):
-        stem = f"{next_stem + frames:06d}"
-        lines, stats = label_frame(record, bufs, configs)
+        stem = record["frame_id"]
+        lines, track_ids, stats = label_frame(record, bufs, configs)
+        assert len(lines) == len(track_ids)   # the alignment is load-bearing
 
         Image.fromarray(bufs["cam_front"]).save(root / "image_2" / f"{stem}.png")
         (root / "label_2" / f"{stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
@@ -1004,11 +1030,20 @@ def write_kitti(
             pts[:, 1] *= -1.0
             pts.tofile(root / "velodyne" / f"{stem}.bin")
 
+        # ego_pose rides along with the frame index. It is not a KITTI field, but the
+        # raw records it comes from are LOCAL ONLY and die with the capture instance,
+        # so leaving it out means the published dataset can never reconstruct where
+        # the ego was. That trajectory is what makes a stale detection scoreable
+        # against what was true when it was consumed -- the measurement this whole
+        # project exists to make. ~250 bytes/frame against ~2.7 MB of image.
         index[stem] = {
             "scene_id": record["scene_id"],
             "frame_id": record["frame_id"],
             "carla_frame": record["carla_frame"],
+            "timestamp_sim_s": record["timestamp_sim_s"],
+            "ego_pose": record["ego_pose"],
             "objects": len(lines),
+            "track_ids": track_ids,     # aligned row-for-row with label_2/<stem>.txt
         }
         for k, v in stats["kept"].items():
             kept[k] = kept.get(k, 0) + v

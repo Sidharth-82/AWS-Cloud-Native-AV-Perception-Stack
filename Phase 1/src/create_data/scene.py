@@ -37,6 +37,17 @@ class Scene:
         self.ego_target_speed = scene_cfg["ego_target_speed_kph"]
         self.duration_s = scene_cfg["duration_s"]
         self.expected_frames = scene_cfg["expected_frames"]
+
+        # Per-scene capture rate, defaulting to the global one. This is the only
+        # lever that actually multiplies instances of a scarce class: at a fixed
+        # visibility range, instances ~= sign_density_per_km * duration * range *
+        # capture_hz, and ego SPEED cancels out (driving slower holds each sign in
+        # frame longer but passes proportionally fewer of them). Sign-hunting scenes
+        # therefore run at a higher rate while the highway scenes stay at 2 Hz, where
+        # consecutive frames would otherwise be near-duplicates.
+        self.capture_every_n_ticks = scene_cfg.get(
+            "capture_every_n_ticks", type(self).capture_every_n_ticks)
+
         self.traffic_manager_seed = scene_cfg["seeds"]["traffic_manager"]
         self.spawn_rng_seed = scene_cfg["seeds"]["spawn_rng"]
         self.storage_address = scene_cfg["storage"]["s3_prefix"]

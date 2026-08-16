@@ -42,7 +42,7 @@ docker run -d --name carla --gpus all --net=host \
   carlasim/carla:0.9.15 ./CarlaUE4.sh -RenderOffScreen -nosound
 ```
 
-### 4. Quick sanity check
+### 5. Quick sanity check
 ```bash
 docker ps                         # STATUS = Up
 docker logs --tail 30 carla       # UE4 4.26 boot, no fatal GPU/Vulkan errors
@@ -50,7 +50,7 @@ ss -tln | grep 2000               # RPC port open on the host
 ```
 Port 2000 open = server live and accepting client connections.
 
-### 5. Confirm the S3 role is attached (temporary creds, not user keys)
+### 6. Confirm the S3 role is attached (temporary creds, not user keys)
 ```bash
 aws sts get-caller-identity       # ARN should read assumed-role/EC2-S3-Role/...
 ```
@@ -66,6 +66,8 @@ The EBS root deletes with it; the AMI + its snapshot persist for next time (~$3/
 - **The DLAMI eats ~49 GB of the root by itself** — an 80 GB root can't unpack CARLA (needs ~40 GB peak). Hence 120 GB.
 - **Instance-store (`/opt/dlami/nvme`) is NOT captured in an AMI.** Docker must stay on the EBS root (`/var/lib/docker`) for the image to bake in. Confirm with `docker info | grep "Docker Root Dir"` → `/var/lib/docker`.
 - **The `carla` Python module doesn't import inside the server container** — the image ships eggs for py2.7/py3.7 but the container's Python is 3.6 (ABI mismatch), and the client also needs `libjpeg.so.8`. Run the real client from a matched **Python 3.7** env or `pip install carla==0.9.15` in a separate env — not inside the server container. Server validation only needs the port-2000 check above.
+- **CARLA leaks across `load_world` calls and segfaults around the fifth reload.** Capture therefore runs one process per run and each run is one map, so every `load_world` is a fresh process's first call. `scene.py` also skips the reload when the map is unchanged.
+- **Docker's non-TTY pipe block-buffers Python stdout**, so a hard crash loses the traceback. `PYTHONUNBUFFERED=1` in both images plus `python -u`.
 - **CLI can't create the AMI or modify volumes** — `Laptop-User` lacks `ec2:CreateImage`/`ec2:ModifyVolume` by design; do those in the console as admin. It *can* run/terminate/describe instances.
 
 ## Re-baking the AMI (if you change the image/setup)

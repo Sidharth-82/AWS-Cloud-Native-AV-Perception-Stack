@@ -207,3 +207,68 @@ Offline / Locally: Pull the raw capture and do all the CPU Work, project the act
     iv. Reproducibility block: CARLA version, seeds, config manifests, commit hash, exact regenerate command.
 
     v. The sim-to-real disclaimer (sim-labeled; real-world performance untested).
+
+---
+
+# Outcome
+
+Phase 1 is complete. This section records what the build actually settled, since
+several of the decisions above were made before the data existed to test them.
+The plan above is left intact as the design record.
+
+## Delivered
+
+- **8,400 frames, 14,396 labelled objects**, 14 scenes across Town04/06/05,
+  day and night, three traffic densities, 2 Hz from a 20 Hz sim.
+- Four classes (`car`, `truck`, `van`, `motorcycle`), every one at or above the
+  500-instance target and present in every split.
+- KITTI tree per split (`image_2`, `label_2`, `calib`, `velodyne`) plus
+  `frame_index.json`, a per-split `dataset_summary.json`, and `class_histogram.md`.
+- Published to `s3://.../processed/carla_highway_perception_v1/v3/`, versioned so a
+  re-publish cannot overwrite the dataset a model was trained on.
+- One command end to end: `FRAMES= UPLOAD=1 bash orchestrate.sh`.
+
+## Where the plan changed, and why
+
+**Step 8.iii, the visibility filter, was redesigned.** The plan matched
+instance-segmentation pixels to actors by `actor.id`. Checked against real
+captures, the ID packed into the G/B channels does not correspond to the Python
+actor ID under either byte order — it is engine-side. **Depth became the occlusion
+oracle** instead: a pixel blocks if it is rendered nearer than the box. The
+instance ID keeps a smaller job, separating two same-class vehicles whose boxes
+overlap. Depth was independently confirmed to be planar rather than radial by
+projecting LiDAR into the camera (`buffer/planar = 1.0000`).
+
+**Speed-limit signs were descoped.** A survey of the road graph established the
+supply: Town04 posts 59 speed-limit signs, Town05 posts 18, Town06 none. Sign
+instances scale as `density x duration x visibility range x capture rate`, with
+ego speed cancelling out, so the ceiling is set by the maps rather than by capture
+budget — and one posted value had two signs per map. Signs are still recorded in
+the raw capture, so this is a `class_map` preset away from returning. The Phase 5
+controller needs lane geometry and a lead vehicle, neither of which comes from signs.
+
+**Splits are keyed on the run, not just the scene.** Runs are split-pure and
+map-pure: map-pure because each map needs its own client process, and split-pure
+so `--split train` selects work directly. The processor cross-checks the run flag
+against the per-scene flag and refuses to start if they disagree.
+
+**Raw stays on the instance.** Capture and processing share a box, so raw is
+written to the instance store and read from local disk; only the finished dataset
+is published. The tradeoff is explicit: re-tuning a threshold is free while the
+instance lives, and a re-capture afterwards.
+
+**The dataset carries more than KITTI defines.** `frame_index.json` adds
+`ego_pose`, `track_ids` aligned row-for-row with the label file, and sim
+timestamps — the ground-truth timeline the delay study is built on, which KITTI
+has nowhere to put.
+
+**Frames are named `SCENE_CARLAFRAME`.** KITTI's `%06d` buys tooling
+compatibility at the cost of opaque filenames; traceability was worth more, since
+the Phase 2 loader is ours.
+
+## Deliberate limitations
+
+Front camera only; clear day and night weather only; no lane-geometry labels
+(the controller reads those from the map at runtime); sim-only with no
+sim-to-real validation. `car` and `truck` exceed the 1,500 ceiling, which is left
+as-is rather than discarding real instances to hit a number.

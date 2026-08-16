@@ -73,45 +73,56 @@ upload scene prefix -> verify -> delete local -> mark done
 Idempotent: re-running a scene overwrites its prefix; skip scenes whose prefix already exists
 (resumable after a spot kill).
 
-## S3 layout (must match `utils._iter_fetch_jobs`)
+## On-disk layout (raw)
+
+Written to the instance store, read by the processing container off local disk. Raw is
+**not** published: capture and processing share a box, so uploading it would mean ~200k
+PUTs for data the next stage reads locally. Only the finished dataset goes to S3.
 ```
-s3://perception-project-bucket/raw/scene_001/records.jsonl
-s3://perception-project-bucket/raw/scene_001/cam_front/001_000123.png
-s3://perception-project-bucket/raw/scene_001/{cam_front_depth,cam_front_instance_seg}/001_000123.png
-s3://perception-project-bucket/raw/scene_001/lidar_top/001_000123.npy
+/opt/dlami/nvme/perception/_scratch/scene_001/records.jsonl
+/opt/dlami/nvme/perception/_scratch/scene_001/cam_front/001_000123.png
+/opt/dlami/nvme/perception/_scratch/scene_001/{cam_front_depth,cam_front_instance_seg}/001_000123.png
+/opt/dlami/nvme/perception/_scratch/scene_001/lidar_top/001_000123.npy
 ```
+`--upload-raw` still pushes raw under `run_XXX/scene_XXX/...` for a run that must outlive
+its instance; the offline reader takes either source behind one interface.
 
 ## Spot resilience
-Spot g4dn interruptions are uncommon but real. **Both nvme and the delete-on-termination EBS root
-die on a spot kill** — so disk choice is NOT the protection; **S3 flush cadence is.** Keep nvme
-scratch (fast, free); flush per scene (or per-N-frames for tighter bounds). Best mitigation: poll
-the interruption notice at IMDS `/latest/meta-data/spot/instance-action`; on the ~2-min warning,
-break, flush the current partial scene, then die.
+Spot g4dn interruptions are uncommon but real, and **both nvme and the delete-on-termination
+EBS root die on a spot kill** — so disk choice is not the protection. The protections that
+matter: capture is **per-run**, so a kill costs the current run rather than the set, and
+completed runs stay on disk for the processing pass. Poll the interruption notice at IMDS
+`/latest/meta-data/spot/instance-action` and use the ~2-min warning to finish the current
+scene. Raw is disposable by design; the dataset in S3 is what must survive.
 
-## Config / infra fixes (do first)
-- **Bucket name**: `scene_description.json` (`scenes[].storage.s3_prefix`) + `metadata.json`
-  (`storage_root`): `carla-perception-v1` → **`perception-project-bucket`**. Uploader + reader read
-  these verbatim.
-- **`Dockerfile`**: add **`boto3`** to the pip line (uploads need it; currently absent).
-- `capture.py` imports `utils` — run as a package or fix `sys.path` so the import resolves on the box.
+## Night lighting
+CARLA's autopilot drives with lights off and `clear_night` puts the sun at -90 degrees, so a
+night scene has no light source at all. Every vehicle in a night scene gets `Position | LowBeam`
+set explicitly rather than through the Traffic Manager, which would make a scene's exposure
+depend on TM state instead of on the scene config.
 
-## Deployment (attended, subset-first)
-Two containers on **`--net=host`** (client reaches `localhost:2000` AND the IMDS role creds).
-`scp src/ config/ Dockerfile orchestrate.sh` → build `carla-client:0.9.15` once → `orchestrate.sh`
-starts the server container, waits for `:2000`, runs the client with `-v ~/cap:/workspace`.
-First: `--max-frames-per-scene 5`, inspect, then full run. Terminate only after verifying S3.
+## Per-scene capture rate
+`capture_every_n_ticks` defaults from `CARLA_config` but a scene may override it. Instances of a
+scarce class scale as `density x duration x range x capture_hz` — ego speed cancels, since
+driving slower holds an object in frame longer but passes proportionally fewer. Rate is
+therefore the only per-scene lever that multiplies a starved class.
 
-## Verification (cheap → full)
-1. **Local, no GPU**: configs load/strip, run 1 → scene_ids, scene→prefix uses the real bucket.
-2. **Subset run** (`--max-frames-per-scene 5`): S3 has `records.jsonl` + 4 buffers for all 12 scenes.
-3. **Writer↔reader contract**: `utils.iter_run_frames(1)` over the subset decodes depth +
-   instance-seg and yields `(record, buffers)` without error (resolves the `utils.py:61` TODO).
-4. **Empirical checks** before the full run: instance-seg id decodes to `actor.id` + byte order
-   (`sensor_encoding.how_to_verify`); enumerate per-town sign values vs `class_map`.
+## Deployment
+`orchestrate.sh` runs the whole pipeline: start the server, install the additional maps if
+missing, build **both** images, capture every run, process every split, publish. Two images
+because the capture client is pinned to Python 3.7 by the `carla` wheel while the offline half
+is numpy on 3.11; neither copies source, both mount the checkout, so a code edit needs no
+rebuild. Both run `--net=host` so the client reaches `localhost:2000` and the IMDS role creds.
+Subset first (`FRAMES=5`), inspect the renders, then the full run.
 
-## Open items (not this module)
-- `utils._decode_*` and `_iter_fetch_jobs/iter_run_frames` are still `pass` stubs — the offline
-  half must be filled before verification step 3 fully passes (separate task).
-- No git repo yet (`metadata.provenance.git_commit`): `git init` or record config-hash-only.
-- CARLA→KITTI 3D transform is offline (step 8); this writer only emits world-frame boxes per
-  `coordinate_conventions` — keep them exact, they're the transform's input.
+## Verification (cheap -> full)
+1. **Local, no GPU**: configs load/strip; runs resolve to scene ids; every run is split-pure and
+   agrees with the per-scene split.
+2. **Subset run** (`bash orchestrate.sh`): capture, processing, splits and the S3 layout end to
+   end across every scene, for a few minutes of GPU.
+3. **Writer/reader contract**: stream the subset back; depth and instance-seg decode without error.
+4. **Convention checks**: depth planar-vs-radial and LiDAR handedness resolved against each other
+   with LiDAR reprojection; `rotation_y` checked against recorded velocity.
+5. **Render the cuboids**: `viz.py` rebuilds boxes from the written label fields and draws them,
+   which round-trips the writer. A wireframe box is symmetric, so the facing end is drawn with a
+   cross — otherwise a 180-degree yaw error renders perfectly.

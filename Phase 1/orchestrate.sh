@@ -5,9 +5,15 @@
 # missing, builds both images, captures every run, then processes each split into a
 # KITTI tree and publishes ONLY that tree to S3.
 #
-# Raw frames never leave the box. They stay in ./_scratch until the instance is
-# terminated, so a threshold that looks wrong in the sample renders can be
-# re-processed without paying for the GPU capture again.
+# Raw frames never leave the box. They live on the INSTANCE STORE (NVMe) rather than
+# EBS: g4dn.xlarge ships 125 GB of it, the workload is write-heavy, and the data is
+# already treated as disposable -- so spending EBS on it buys nothing. They survive
+# until the instance stops, so a threshold that looks wrong in the sample renders can
+# be re-processed without paying for the GPU capture again.
+#
+# NOTE the instance store is lost on STOP as well as on terminate, unlike EBS. Stop the
+# box to save money and the raw frames are gone; only the published dataset in S3
+# survives that.
 #
 # Run on the EC2 box from the Phase 1 dir (the one holding src/create_data/, src/process_data/,
 # src/common/, config/):
@@ -17,8 +23,15 @@
 # Env knobs:
 #   FRAMES   frames per scene (default 5; FRAMES= means the whole scene)
 #   UPLOAD   1 to publish the processed trees to S3 (default 0, local only)
-#   RUNS     capture run ids (default: every run in metadata.json)
-#   SPLITS   splits to process (default: train val test)
+#   RUNS     capture run ids (default: every run in metadata.json; RUNS= skips capture)
+#   SPLITS   splits to process (default: train val test; SPLITS= skips processing)
+#   VERSION  dataset version = S3 prefix segment (default: metadata.json dataset_version).
+#            Computed ONCE here and passed to every split, so one build lands under one
+#            version instead of scattering across three.
+#   SAMPLES  annotated renders per split (default 8; -1 renders every frame for VLM QA)
+#   DATA     host dir for raw + processed data (default: the NVMe instance store if
+#            mounted, else beside this script on EBS)
+#   NVME     instance-store mount point (default /opt/dlami/nvme)
 #
 set -euo pipefail
 
@@ -31,11 +44,31 @@ OFFLINE_IMAGE="perception-offline:1.0"
 
 FRAMES="${FRAMES-5}"
 UPLOAD="${UPLOAD:-0}"
-SPLITS="${SPLITS:-train val test}"
-RUNS="${RUNS:-$(python3 -c "import json; print(' '.join(str(r['run_id']) for r in json.load(open('config/metadata.json'))['runs']))")}"
+SPLITS="${SPLITS-train val test}"
+SAMPLES="${SAMPLES:-8}"
+VERSION="${VERSION:-$(python3 -c "import json; print(json.load(open('config/metadata.json'))['dataset_version'])")}"
+RUNS="${RUNS-$(python3 -c "import json; print(' '.join(str(r['run_id']) for r in json.load(open('config/metadata.json'))['runs']))")}"
 
-SCRATCH=/workspace/_scratch      # raw capture output (container path; ./_scratch on host)
-KITTI=/workspace/kitti           # processed dataset root (./kitti on host)
+# Data lives on the instance store; code and config come from the repo checkout. They
+# are separate volumes, so they get separate container mounts: /workspace is the
+# checkout (small, on EBS) and /data is scratch + dataset (large, on NVMe).
+NVME="${NVME:-/opt/dlami/nvme}"
+if [ -z "${DATA:-}" ]; then
+    if [ -d "$NVME" ] && [ -w "$NVME" ]; then
+        DATA="$NVME/perception"
+    else
+        DATA="$HERE"
+        echo "[orchestrate] WARNING: $NVME is not a writable mount; falling back to" >&2
+        echo "              $DATA on EBS. A full run needs ~80 GB -- check df -h." >&2
+        echo "              To mount the instance store: lsblk to find the device," >&2
+        echo "              then mkfs -t xfs /dev/nvmeXn1 and mount it at $NVME." >&2
+    fi
+fi
+mkdir -p "$DATA/_scratch" "$DATA/kitti"
+echo "[orchestrate] data root: $DATA ($(df -h "$DATA" | awk 'NR==2{print $4}') free)"
+
+SCRATCH=/data/_scratch           # raw capture output (container path)
+KITTI=/data/kitti                # processed dataset root (container path)
 
 # 1. Start the CARLA server container (idempotent — reuse if already up).
 if docker ps --format '{{.Names}}' | grep -qx carla; then
@@ -113,38 +146,39 @@ docker build -t "$OFFLINE_IMAGE" -f src/process_data/Dockerfile src/process_data
 #    scene.py's dedup reuses the map for the rest of the run. Per-run processes also keep
 #    provenance clean -- each stamps its own metadata entry.
 #    --net=host so the client reaches localhost:2000 AND the IMDS role creds. Mount
-#    HERE -> /workspace so config/ resolves and output lands in ./_scratch on the host.
+#    HERE -> /workspace so config/ resolves; DATA -> /data so frames land on the NVMe.
 #    Nothing goes to S3 here: capture only uploads raw when handed --upload-raw.
 SUBSET=()
 [ -n "$FRAMES" ] && SUBSET=(--max-frames-per-scene "$FRAMES")
 echo "[orchestrate] capturing runs: $RUNS (frames/scene: ${FRAMES:-all})"
 for run in $RUNS; do
     echo "[orchestrate] --- capture run $run ---"
-    docker run --rm --net=host -v "$HERE":/workspace "$CLIENT_IMAGE" \
+    docker run --rm --net=host -v "$HERE":/workspace -v "$DATA":/data "$CLIENT_IMAGE" \
         python -u src/create_data/capture.py --run "$run" \
         --output-root "$SCRATCH" "${SUBSET[@]}"
 done
 
 # 5. PROCESS (CPU). One invocation per split. Each selects the runs flagged with that
-#    split in metadata.json and writes ./kitti/<split>/. No GPU and no CARLA -- it only
-#    reads ./_scratch off local disk. Runs on this same box because the instance is
+#    split in metadata.json and writes $DATA/kitti/<split>/. No GPU, no CARLA -- it only
+#    reads $DATA/_scratch off local disk. Runs on this same box because the instance is
 #    already paid for and the raw data is already sitting here.
 PUBLISH=(--no-upload)
 [ "$UPLOAD" = "1" ] && PUBLISH=()
-echo "[orchestrate] processing splits: $SPLITS (upload: $UPLOAD)"
+echo "[orchestrate] processing splits: $SPLITS (upload: $UPLOAD, version: $VERSION)"
 for split in $SPLITS; do
     echo "[orchestrate] --- process split $split ---"
-    docker run --rm --net=host -v "$HERE":/workspace "$OFFLINE_IMAGE" \
+    docker run --rm --net=host -v "$HERE":/workspace -v "$DATA":/data "$OFFLINE_IMAGE" \
         python -u src/process_data/process.py --split "$split" \
-        --raw-root "$SCRATCH" --output-root "$KITTI" "${PUBLISH[@]}"
+        --raw-root "$SCRATCH" --output-root "$KITTI" \
+        --version "$VERSION" --samples "$SAMPLES" "${PUBLISH[@]}"
 done
 
-# 6. Circular top-up (manual, after reading the histogram). If ./kitti/dataset_summary.json
+# 6. Circular top-up (manual, after reading the histogram). If $DATA/kitti/dataset_summary.json
 #    shows a class came out thin: add scenes that produce it to scene_description, add a
 #    NEW split-pure run to metadata, capture that run, then mine it for only the frames
 #    carrying that class. This APPENDS to the existing tree, continuing its numbering:
 #
-#      docker run --rm --net=host -v "$HERE":/workspace "$OFFLINE_IMAGE" \
+#      docker run --rm --net=host -v "$HERE":/workspace -v "$DATA":/data "$OFFLINE_IMAGE" \
 #          python -u src/process_data/process.py --split train --raw-root "$SCRATCH" \
 #          --output-root "$KITTI" --runs 6 --topup-class speed_sign_30 --topup-frames 200
 
@@ -153,11 +187,11 @@ done
 #    covers whatever splits currently exist on disk.
 echo
 echo "[orchestrate] ================= class histogram ================="
-cat ./kitti/class_histogram.md || echo "[orchestrate] no histogram written"
+cat "$DATA/kitti/class_histogram.md" || echo "[orchestrate] no histogram written"
 echo "[orchestrate] ==================================================="
 
 echo "[orchestrate] done."
-echo "  raw    ./_scratch/scene_XXX/     (kept until this instance is terminated)"
-echo "  data   ./kitti/<split>/          (image_2 label_2 calib + dataset_summary.json)"
-echo "  viz    ./kitti/samples/<split>/  (annotated frames -- eyeball these)"
-echo "  hist   ./kitti/class_histogram.md"
+echo "  raw    $DATA/_scratch/scene_XXX/     (instance store -- lost on stop/terminate)"
+echo "  data   $DATA/kitti/<split>/          (image_2 label_2 calib + dataset_summary.json)"
+echo "  viz    $DATA/kitti/samples/<split>/  (annotated frames -- eyeball these)"
+echo "  hist   $DATA/kitti/class_histogram.md"

@@ -198,10 +198,19 @@ def render_samples(kitti_root, out_dir, n: int = 8, label_dir: str = "label_2", 
     only shows up drawn on pixels. Doubles as the source of the README's
     annotated sample images.
 
+    n < 0 renders EVERY frame. That is the mode for machine QA -- handing the whole
+    annotated split to a VLM to flag bad boxes -- as opposed to the handful a human
+    eyeballs. It is a full re-encode of the split, so it is opt-in.
+
+    Renders keep the source stem (SCENE_CARLAFRAME), so a flagged render names the
+    frame it came from without a lookup.
+
     Returns the list of paths written.
     """
     root, out_dir = Path(kitti_root), Path(out_dir)
     stems = sorted(p.stem for p in (root / label_dir).glob("*.txt"))
     stems.sort(key=lambda s: -len(read_labels(root / label_dir / f"{s}.txt")))
+    if n is not None and n < 0:
+        n = len(stems)
     return [render_kitti_frame(root, s, out_dir / f"{s}.png", label_dir, **kwargs)
             for s in stems[:n]]
