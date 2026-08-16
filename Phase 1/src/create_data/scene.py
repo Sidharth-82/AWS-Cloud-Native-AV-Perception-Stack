@@ -192,7 +192,10 @@ class Scene:
         resp = self.carla_client.apply_batch_sync(batch, False)
         self.traffic_actors = [r.actor_id for r in resp if not r.error]
         print(f"[scene {self.scene_id}] traffic spawned: {len(self.traffic_actors)}/{n}", flush=True)
-        
+
+        ##Lights
+        self._set_night_lights()
+
         ##Signs
         signs = self.world.get_environment_objects(carla.CityObjectLabel.TrafficSigns)
         
@@ -208,6 +211,37 @@ class Scene:
         print(f"[scene {self.scene_id}] world_setup complete; {len(self.sign_data)} signs", flush=True)
 
         
+
+    def _set_night_lights(self):
+        """
+        Switch headlights and tail lights on for every vehicle in a night scene.
+
+        CARLA does not do this on its own -- autopilot drives with the lights off --
+        and the clear_night preset puts the sun at -90 deg, so there is no light
+        source in the scene at all. The captured night frames came out effectively
+        black (mean luminance ~4/255, with ~75% of pixels under 10). The LABELS were
+        still correct, since they come from the sim rather than the image, but the
+        images carried almost nothing for a camera detector to learn from.
+
+        Ego headlights matter most: they are what lights the road and the vehicles
+        ahead for the front camera. Position lights on the traffic matter too -- they
+        are how a car ahead is visible at all before the headlights reach it.
+
+        Set explicitly rather than through tm.update_vehicle_lights(): the Traffic
+        Manager drives lighting from its own internal state, which would make a
+        scene's exposure depend on TM history instead of on the scene config, and
+        reproducibility from config is the whole point of the capture design.
+        """
+        if self.tod != "night":
+            return
+
+        lights = carla.VehicleLightState(
+            carla.VehicleLightState.Position | carla.VehicleLightState.LowBeam)
+        self.ego_actor.set_light_state(lights)
+        batch = [command.SetVehicleLightState(aid, lights) for aid in self.traffic_actors]
+        self.carla_client.apply_batch_sync(batch, False)
+        print(f"[scene {self.scene_id}] night scene: lights on for "
+              f"{len(self.traffic_actors) + 1} vehicles", flush=True)
 
     def start(self):
         print(f"[scene {self.scene_id}] start(): enabling autopilot", flush=True)

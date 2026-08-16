@@ -20,4 +20,9 @@ RUN pip install --no-cache-dir \
 # output and a killed process loses it all. Placed after pip so the layer stays cached.
 ENV PYTHONUNBUFFERED=1
 
+# common/ holds config_loader + utils, shared with the offline image. Put it on
+# the path rather than duplicating it, so both halves read configs through one
+# loader and cannot drift on how documentation keys are stripped.
+ENV PYTHONPATH=/workspace/src/common
+
 WORKDIR /workspace

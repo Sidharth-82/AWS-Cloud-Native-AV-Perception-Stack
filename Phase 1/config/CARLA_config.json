@@ -152,7 +152,9 @@
           "motorcycle": "motorcycle"
         },
         "sign_by_speed_kph": {
+          "_note_40": "40 kph was found in the captured data, not planned for: Town04 and Town05 each post 2 of them. Added as its own class rather than dropped, since signs are the starved class and an unlabeled sign in frame trains the detector to call it background.",
           "30": "speed_sign_30",
+          "40": "speed_sign_40",
           "60": "speed_sign_60",
           "90": "speed_sign_90"
         }
@@ -166,7 +168,9 @@
           "motorcycle": "vehicle"
         },
         "sign_by_speed_kph": {
+          "_note_40": "40 kph was found in the captured data, not planned for: Town04 and Town05 each post 2 of them. Added as its own class rather than dropped, since signs are the starved class and an unlabeled sign in frame trains the detector to call it background.",
           "30": "speed_sign_30",
+          "40": "speed_sign_40",
           "60": "speed_sign_60",
           "90": "speed_sign_90"
         }

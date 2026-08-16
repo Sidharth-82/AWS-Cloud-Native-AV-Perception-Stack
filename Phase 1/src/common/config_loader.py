@@ -3,8 +3,9 @@ import json
 from utils import strip_all_documentation
 
 # Anchored to this file, not the working directory, so the loader works no
-# matter where python is invoked from.
-CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+# matter where python is invoked from. Three levels up from src/common/ is the
+# Phase 1 root; keep this in step if the package layout moves again.
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
 # The config SET: the constant inputs that parametrize a run. dataset_example
 # is a schema DOC, not runtime config, so it is deliberately absent.

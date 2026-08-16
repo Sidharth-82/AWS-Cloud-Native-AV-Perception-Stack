@@ -102,16 +102,20 @@ def _instance_identity():
 class Capture:
     """One run = capture a set of scenes end-to-end and push them to S3."""
 
-    def __init__(self, run_id, output_root, subset=None, no_upload=False, scenes=None):
+    def __init__(self, run_id, output_root, subset=None, upload_raw=False, scenes=None):
         self.run_id = run_id
         self.output_root = Path(output_root)   # local scratch root (nvme)
         self.subset = subset                   # cap frames/scene for a subset run; None = full
-        self.no_upload = no_upload             # local-only: skip S3, keep files for inspection
+        # Raw frames stay on the box by DEFAULT. Only the processed KITTI tree is
+        # published (process.py uploads it), so capture does no S3 work at all in the
+        # normal flow -- no ~200k PUTs, and the offline pass reads the local scratch
+        # directly. Keeping the scenes on disk also means the whole pipeline can be
+        # re-processed in-session when a sample render shows a threshold is off.
+        self.no_upload = not upload_raw
 
         # Connect the CARLA client ONCE — reused across every scene (outer lifetime).
         self.client = carla.Client(SERVER["host"], SERVER["port"])
         self.client.set_timeout(SERVER["timeout_s"])
-        print(sorted(x for x in self.client.get_available_maps() if 'Town06' in x))
 
         # Resolve this run -> its scene_ids (from metadata.json) -> scene configs, in order.
         runs = CONFIGS["metadata.json"]["runs"]
@@ -135,7 +139,7 @@ class Capture:
         # Built only when uploading, so a --no-upload smoke run needs no credentials.
         # Bucket comes from metadata.json storage_root (single source of truth).
         self._s3 = None
-        if not no_upload:
+        if not self.no_upload:
             self._bucket = _split_s3_bucket(CONFIGS["metadata.json"]["storage_root"])
             self._s3 = boto3.client("s3", config=Config(
                 retries={"total_max_attempts": 5, "mode": "adaptive"},
@@ -300,15 +304,16 @@ if __name__ == "__main__":
     parser.add_argument("--output-root", default="/opt/dlami/nvme/raw", help="local raw/ scratch root")
     parser.add_argument("--max-frames-per-scene", type=int, default=None,
                         help="subset cap: frames per scene (omit for full run)")
-    parser.add_argument("--no-upload", action="store_true",
-                        help="skip S3 upload and keep local files (subset smoke test)")
+    parser.add_argument("--upload-raw", action="store_true",
+                        help="ALSO push the raw frames to S3. Off by default: raw stays local "
+                             "and only the processed KITTI tree is published.")
     parser.add_argument("--scenes", type=int, nargs="+", default=None,
                         help="explicit scene ids to run (one map-group per process, to dodge "
                              "CARLA's cross-reload client-thread crash); default = the whole run")
     args = parser.parse_args()
 
     Capture(args.run, args.output_root, subset=args.max_frames_per_scene,
-            no_upload=args.no_upload, scenes=args.scenes).run()
+            upload_raw=args.upload_raw, scenes=args.scenes).run()
 
     # CARLA's client threads crash the interpreter on normal shutdown
     # (PyEval_SaveThread: NULL tstate). All work + provenance is done by now, so exit

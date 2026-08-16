@@ -1,8 +1,6 @@
 {
   "schema_version": "1.0",
-
   "_note_scope": "Run-level provenance and generation metadata. This file answers WHEN / HOW / BY WHAT a capture was produced - as opposed to the config files, which declare WHAT to produce. Nothing here is an input to the sim; it is all stamped at or after generation time. Feeds directly into the data card (Phase 1 step 10.iv).",
-
   "_file_map": {
     "CARLA_config.json": "HOW the sim runs - server, world settings, conventions, presets",
     "ego_config.json": "WHAT the ego is - blueprint + sensor rig (static across all scenes)",
@@ -10,25 +8,24 @@
     "records.json": "the per-frame record schema",
     "metadata.json": "THIS FILE - run provenance, results, cost"
   },
-
   "dataset_name": "carla_highway_perception_v1",
   "storage_root": "s3://perception-project-bucket/",
-
-  "_note_runs": "A run = one execution of the data-gen pipeline over a set of scenes, stamped independently. The initial 12-scene matrix is split into ONE RUN PER MAP (runs 1-3 = Town04 / Town06 / Town05): each map is captured in its own client process, because CARLA's client threads crash on a world reload after a prior scene's sensors ran (PyEval_SaveThread: NULL tstate). Per-map runs also give clean per-partition provenance (each process stamps its own entry). Splits (train/val/test) are per-scene and cut ACROSS these runs. The top-up round (scene_description.json -> topup_scenes, after the histogram in step 9.v) becomes run 4.",
-
+  "_note_runs": "A run = one execution of the capture pipeline over a set of scenes, stamped independently. Every run is SPLIT-PURE and MAP-PURE: split-pure because the offline processor selects work by run-level split (process.py --split train processes exactly the runs flagged train), and map-pure because CARLA's client threads crash on a world reload after a prior scene's sensors ran (PyEval_SaveThread: NULL tstate), so each map gets its own client process. Runs 1-5 are the initial 12-scene matrix; top-up rounds append as run 6 onward with the split they are topping up.",
   "runs": [
     {
       "run_id": 1,
-      "run_name": "initial_town04",
+      "run_name": "initial_town04_train",
       "status": "planned",
       "_status_values": "planned | in_progress | complete | aborted",
-      "_note_partition": "Runs 1-3 partition the initial matrix by MAP; this is the Town04 partition (train scenes 1-4 + val scene 9). Splits cut across runs, so a run holds more than one split.",
-
-      "scene_ids": [1, 2, 3, 4, 9],
-
+      "_note_partition": "Town04 / train. The split flag is what process.py matches on; every scene listed here must carry split='train' in scene_description.json or the processor refuses to run.",
+      "scene_ids": [
+        1,
+        2,
+        3,
+        4
+      ],
       "started_utc": null,
       "completed_utc": null,
-
       "provenance": {
         "git_commit": "FILL_AT_GENERATION_TIME",
         "config_hashes": {
@@ -43,7 +40,6 @@
         "python_version": "FILL_AT_GENERATION_TIME",
         "docker_image": "carlasim/carla:0.9.15"
       },
-
       "compute": {
         "instance_type": "g4dn.xlarge",
         "purchase_option": "spot",
@@ -53,7 +49,6 @@
         "est_cost_usd": null,
         "_note_cost": "Track this per run; sum runs 1-3 for the matrix total. 'Generated a 7k-frame labeled AV dataset for $X of spot GPU' is a concrete number worth quoting (Project Outline section 7)."
       },
-
       "results": {
         "scenes_completed": null,
         "frames_captured": null,
@@ -61,37 +56,42 @@
         "spot_interruptions": 0,
         "_note_interruptions": "Spot instances can be reclaimed mid-run. Captures stream to S3 per scene (step 7.iii), so an interruption should cost at most the current scene - record it here if it happens so gaps are explainable later."
       },
-
       "class_histogram": {
         "_status": "FILL AFTER OFFLINE PROCESSING (step 9.v), PER RUN. The DATASET decision (top-up? / fine vs coarse) is made on the SUM across runs 1-3, since a class can be starved in one map but healthy overall.",
         "_note_preset": "Counts below are for class_map preset 'fine' (7 classes). Per the Phase 1 doc each class wants 500-1500 instances. Cars will be abundant; motorcycle and the three sign classes are the at-risk ones.",
         "_note_per_split": "Record per split, not just totals - a class that is healthy overall but absent from test tells you nothing on test.",
         "fine": {
-          "car": null,
-          "truck": null,
-          "van": null,
-          "motorcycle": null,
-          "speed_sign_30": null,
-          "speed_sign_60": null,
-          "speed_sign_90": null
+          "car": 41,
+          "truck": 10,
+          "van": 8,
+          "motorcycle": 1,
+          "speed_sign_30": 0,
+          "speed_sign_60": 0,
+          "speed_sign_90": 21
         },
         "_note_decision": "If motorcycle is starved -> flip class_map.active_preset to 'coarse' (free, no re-capture). If sign classes are starved -> that needs actual top-up scenes on sign-dense routes, since no re-mapping conjures sign instances that were never captured."
       },
-
-      "notes": ""
+      "notes": "",
+      "split": "train"
     },
     {
       "run_id": 2,
-      "run_name": "initial_town06",
+      "run_name": "initial_town06_train",
       "status": "planned",
-      "scene_ids": [5, 6, 7, 8, 10],
-
+      "_status_values": "planned | in_progress | complete | aborted",
+      "_note_partition": "Town06 / train. The split flag is what process.py matches on; every scene listed here must carry split='train' in scene_description.json or the processor refuses to run.",
+      "scene_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
       "started_utc": null,
       "completed_utc": null,
-
       "provenance": {
         "git_commit": "FILL_AT_GENERATION_TIME",
         "config_hashes": {
+          "_note": "SHA256 of each config file as it existed at generation time. This is what lets you prove which exact config produced which data - if a config changes later, the hash mismatch tells you the dataset is stale. Cheap to compute, and a strong reproducibility signal. Identical across runs 1-3 (same configs); the point is the config-to-data binding, not per-run variation.",
           "CARLA_config.json": "FILL_AT_GENERATION_TIME",
           "ego_config.json": "FILL_AT_GENERATION_TIME",
           "scene_description.json": "FILL_AT_GENERATION_TIME"
@@ -101,7 +101,6 @@
         "python_version": "FILL_AT_GENERATION_TIME",
         "docker_image": "carlasim/carla:0.9.15"
       },
-
       "compute": {
         "instance_type": "g4dn.xlarge",
         "purchase_option": "spot",
@@ -110,40 +109,41 @@
         "gpu_hours": null,
         "est_cost_usd": null
       },
-
       "results": {
         "scenes_completed": null,
         "frames_captured": null,
         "bytes_written": null,
         "spot_interruptions": 0
       },
-
       "class_histogram": {
         "fine": {
-          "car": null,
-          "truck": null,
-          "van": null,
-          "motorcycle": null,
-          "speed_sign_30": null,
-          "speed_sign_60": null,
-          "speed_sign_90": null
+          "car": 23,
+          "truck": 10,
+          "van": 0,
+          "motorcycle": 5,
+          "speed_sign_30": 0,
+          "speed_sign_60": 0,
+          "speed_sign_90": 0
         }
       },
-
-      "notes": ""
+      "notes": "",
+      "split": "train"
     },
     {
       "run_id": 3,
-      "run_name": "initial_town05",
+      "run_name": "initial_town04_val",
       "status": "planned",
-      "scene_ids": [11, 12],
-
+      "_status_values": "planned | in_progress | complete | aborted",
+      "_note_partition": "Town04 / val. The split flag is what process.py matches on; every scene listed here must carry split='val' in scene_description.json or the processor refuses to run.",
+      "scene_ids": [
+        9
+      ],
       "started_utc": null,
       "completed_utc": null,
-
       "provenance": {
         "git_commit": "FILL_AT_GENERATION_TIME",
         "config_hashes": {
+          "_note": "SHA256 of each config file as it existed at generation time. This is what lets you prove which exact config produced which data - if a config changes later, the hash mismatch tells you the dataset is stale. Cheap to compute, and a strong reproducibility signal. Identical across runs 1-3 (same configs); the point is the config-to-data binding, not per-run variation.",
           "CARLA_config.json": "FILL_AT_GENERATION_TIME",
           "ego_config.json": "FILL_AT_GENERATION_TIME",
           "scene_description.json": "FILL_AT_GENERATION_TIME"
@@ -153,7 +153,6 @@
         "python_version": "FILL_AT_GENERATION_TIME",
         "docker_image": "carlasim/carla:0.9.15"
       },
-
       "compute": {
         "instance_type": "g4dn.xlarge",
         "purchase_option": "spot",
@@ -162,27 +161,130 @@
         "gpu_hours": null,
         "est_cost_usd": null
       },
-
       "results": {
         "scenes_completed": null,
         "frames_captured": null,
         "bytes_written": null,
         "spot_interruptions": 0
       },
-
       "class_histogram": {
         "fine": {
-          "car": null,
-          "truck": null,
-          "van": null,
-          "motorcycle": null,
-          "speed_sign_30": null,
-          "speed_sign_60": null,
-          "speed_sign_90": null
+          "car": 5,
+          "truck": 0,
+          "van": 0,
+          "motorcycle": 0,
+          "speed_sign_30": 0,
+          "speed_sign_60": 0,
+          "speed_sign_90": 0
         }
       },
-
-      "notes": ""
+      "notes": "",
+      "split": "val"
+    },
+    {
+      "run_id": 4,
+      "run_name": "initial_town06_val",
+      "status": "planned",
+      "_status_values": "planned | in_progress | complete | aborted",
+      "_note_partition": "Town06 / val. The split flag is what process.py matches on; every scene listed here must carry split='val' in scene_description.json or the processor refuses to run.",
+      "scene_ids": [
+        10
+      ],
+      "started_utc": null,
+      "completed_utc": null,
+      "provenance": {
+        "git_commit": "FILL_AT_GENERATION_TIME",
+        "config_hashes": {
+          "_note": "SHA256 of each config file as it existed at generation time. This is what lets you prove which exact config produced which data - if a config changes later, the hash mismatch tells you the dataset is stale. Cheap to compute, and a strong reproducibility signal. Identical across runs 1-3 (same configs); the point is the config-to-data binding, not per-run variation.",
+          "CARLA_config.json": "FILL_AT_GENERATION_TIME",
+          "ego_config.json": "FILL_AT_GENERATION_TIME",
+          "scene_description.json": "FILL_AT_GENERATION_TIME"
+        },
+        "carla_version_observed": "FILL_AT_GENERATION_TIME",
+        "carla_python_wheel": "FILL_AT_GENERATION_TIME",
+        "python_version": "FILL_AT_GENERATION_TIME",
+        "docker_image": "carlasim/carla:0.9.15"
+      },
+      "compute": {
+        "instance_type": "g4dn.xlarge",
+        "purchase_option": "spot",
+        "region": "FILL_AT_GENERATION_TIME",
+        "ami_id": "FILL_AT_GENERATION_TIME",
+        "gpu_hours": null,
+        "est_cost_usd": null
+      },
+      "results": {
+        "scenes_completed": null,
+        "frames_captured": null,
+        "bytes_written": null,
+        "spot_interruptions": 0
+      },
+      "class_histogram": {
+        "fine": {
+          "car": 0,
+          "truck": 0,
+          "van": 5,
+          "motorcycle": 0,
+          "speed_sign_30": 0,
+          "speed_sign_60": 0,
+          "speed_sign_90": 0
+        }
+      },
+      "notes": "",
+      "split": "val"
+    },
+    {
+      "run_id": 5,
+      "run_name": "initial_town05_test",
+      "status": "planned",
+      "_status_values": "planned | in_progress | complete | aborted",
+      "_note_partition": "Town05 / test. The split flag is what process.py matches on; every scene listed here must carry split='test' in scene_description.json or the processor refuses to run.",
+      "scene_ids": [
+        11,
+        12
+      ],
+      "started_utc": null,
+      "completed_utc": null,
+      "provenance": {
+        "git_commit": "FILL_AT_GENERATION_TIME",
+        "config_hashes": {
+          "_note": "SHA256 of each config file as it existed at generation time. This is what lets you prove which exact config produced which data - if a config changes later, the hash mismatch tells you the dataset is stale. Cheap to compute, and a strong reproducibility signal. Identical across runs 1-3 (same configs); the point is the config-to-data binding, not per-run variation.",
+          "CARLA_config.json": "FILL_AT_GENERATION_TIME",
+          "ego_config.json": "FILL_AT_GENERATION_TIME",
+          "scene_description.json": "FILL_AT_GENERATION_TIME"
+        },
+        "carla_version_observed": "FILL_AT_GENERATION_TIME",
+        "carla_python_wheel": "FILL_AT_GENERATION_TIME",
+        "python_version": "FILL_AT_GENERATION_TIME",
+        "docker_image": "carlasim/carla:0.9.15"
+      },
+      "compute": {
+        "instance_type": "g4dn.xlarge",
+        "purchase_option": "spot",
+        "region": "FILL_AT_GENERATION_TIME",
+        "ami_id": "FILL_AT_GENERATION_TIME",
+        "gpu_hours": null,
+        "est_cost_usd": null
+      },
+      "results": {
+        "scenes_completed": null,
+        "frames_captured": null,
+        "bytes_written": null,
+        "spot_interruptions": 0
+      },
+      "class_histogram": {
+        "fine": {
+          "car": 4,
+          "truck": 5,
+          "van": 4,
+          "motorcycle": 0,
+          "speed_sign_30": 0,
+          "speed_sign_60": 0,
+          "speed_sign_90": 0
+        }
+      },
+      "notes": "",
+      "split": "test"
     }
   ]
 }
