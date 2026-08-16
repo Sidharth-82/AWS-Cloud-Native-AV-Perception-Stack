@@ -2,7 +2,7 @@
 
 **A highway perception stack split across an onboard real-time tier and an AWS near-real-time tier, built to measure whether delayed cloud perception is still safe to act on.**
 
-![Status](https://img.shields.io/badge/status-Phase%201%20of%207-orange)
+![Status](https://img.shields.io/badge/status-Phase%202%20of%207-orange)
 ![Python](https://img.shields.io/badge/python-3.7%20capture%20%2F%203.11%20offline-blue)
 ![CARLA](https://img.shields.io/badge/CARLA-0.9.15-informational)
 ![AWS](https://img.shields.io/badge/AWS-EC2%20spot%20%2B%20S3-232F3E)
